@@ -31,8 +31,12 @@ def setup_gradio_interface(context):
     def update_embeddings():
         """Callback function to update embeddings when files change"""
         try:
+            # Update embeddings from all files in ingest directory
             context['client'].update_from_ingest_path()
             logging.info("Updated embeddings from ingest directory")
+            
+            # Reset the last processed index since files have changed
+            state["last_processed_index"] = 0
         except Exception as e:
             logging.error(f"Error updating embeddings: {str(e)}")
 
