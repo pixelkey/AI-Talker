@@ -22,7 +22,12 @@ def setup_gradio_interface(context):
         # Output fields
         chat_history = gr.Chatbot(label="Chat History", height=400)
         references = gr.Textbox(label="References", lines=2, interactive=False)
-        audio_output = gr.Audio(label="Response Audio", visible=True)
+        audio_output = gr.Audio(
+            label="Response Audio", 
+            visible=True, 
+            autoplay=True,
+            show_download_button=False
+        )
         debug_output = gr.Textbox(label="Debug Output", lines=2, interactive=False)
 
         # Input fields
@@ -47,7 +52,7 @@ def setup_gradio_interface(context):
                 return None
             try:
                 # Create a temporary file
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as fp:
                     temp_path = fp.name
                 
                 # Generate speech
