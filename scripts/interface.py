@@ -64,6 +64,25 @@ def setup_gradio_interface(context):
                 print(f"Error in text-to-speech: {str(e)}")
                 return None
 
+        def transcribe_audio(audio_path):
+            """Transcribe audio file to text"""
+            if audio_path is None:
+                return "", "No audio received"
+            
+            try:
+                # Initialize recognizer
+                recognizer = sr.Recognizer()
+                
+                # Use the audio file directly
+                with sr.AudioFile(audio_path) as source:
+                    audio = recognizer.record(source)
+                
+                # Perform the recognition
+                text = recognizer.recognize_google(audio)
+                return text, f"Transcribed: {text}"
+            except Exception as e:
+                return "", f"Error transcribing audio: {str(e)}"
+
         # Define a function to handle both reference retrieval and LLM response generation
         def handle_user_input(input_text, history):
             if not input_text.strip():
@@ -92,29 +111,6 @@ def setup_gradio_interface(context):
                 history[-1] = (input_text, response)
                 audio_path = text_to_speech(response)
                 yield history, references, "", history, audio_path, ""
-
-        def transcribe_audio(audio_path):
-            if audio_path is None:
-                return "", "No audio input received"
-            
-            try:
-                # Initialize recognizer
-                recognizer = sr.Recognizer()
-                
-                # Use the audio file directly
-                with sr.AudioFile(audio_path) as source:
-                    print("Recording from audio file...")
-                    audio_data = recognizer.record(source)
-                
-                # Perform the recognition
-                print("Starting speech recognition...")
-                text = recognizer.recognize_google(audio_data)
-                print(f"Recognized text: {text}")
-                return text, f"Successfully transcribed: {text}"
-            except Exception as e:
-                error_msg = f"Error in speech recognition: {str(e)}"
-                print(error_msg)
-                return "", error_msg
 
         def clear_interface(history):
             cleared_history, cleared_refs, cleared_input = clear_history(context, history)

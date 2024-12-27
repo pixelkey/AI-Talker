@@ -16,11 +16,8 @@ env_config = {
     "INGEST_PATH": {"default": "../ingest", "type": str},
     "SYSTEM_PROMPT": {
         "default": (
-            "Please provide responses based only on the context document chunks provided if they are relevant to the user's prompt. "
-            "If the context document chunks are not relevant, or if the information is not available, please let me know. "
-            "Do not provide information beyond what is available in the context documents. "
-            "Chunks are sorted by relevancy, where the first chunk listed is the most relevant. "
-            "Note: Chunks may overlap and so may contain duplicate information."
+            "You are provided with additional information from your memory relative to the conversation."
+            "If the memory does not seem relevant just ignore the memory and respond to the user as normal."
         ),
         "type": str
     },
