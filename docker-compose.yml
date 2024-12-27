@@ -1,0 +1,7 @@
+services:
+  chatbot:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-add-key-to-env-file-or-place-here}

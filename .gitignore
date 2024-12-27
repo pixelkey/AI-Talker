@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+
+# Dotenv environment variable files
+.env*
+!.env-example
+!.env-local-template
+!.env-openai-template
+
+# FAISS index, metadata, and docstore files
+*.bin
+*.pkl
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# macOS metadata files
+.DS_Store
+
+# Gradio debugging files
+gradio_files/
+
+# Log files
+*.log
+
+# Ignore outputs of the Gradio interface
+*.output
+
+# Ignore all files in the embeddings directory except .gitkeep
+embeddings/*
+!embeddings/.gitkeep
+
+# Ignore all files in the ingest directory except .gitkeep
+ingest/*
+!ingest/.gitkeep
+!ingest/examples
+
+# Temporary files
+temp/*
+
+# Tokenizer files
+tokenizers/*
