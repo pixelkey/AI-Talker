@@ -16,30 +16,15 @@ class VectorStoreClient:
         
     def _ensure_embedding_paths(self):
         """Ensure all embedding-related directories exist"""
-        paths = [
+        for path in [
             os.environ["FAISS_INDEX_PATH"],
             os.environ["METADATA_PATH"],
             os.environ["DOCSTORE_PATH"]
-        ]
+        ]:
+            abs_path = self._get_absolute_path(path)
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            logging.info(f"Ensured directory exists for: {abs_path}")
         
-        for path in paths:
-            if not os.path.isabs(path):
-                # Convert relative path to absolute
-                script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                abs_path = os.path.abspath(os.path.join(script_dir, path.lstrip("../")))
-            else:
-                abs_path = path
-            
-            # Create directory if it doesn't exist
-            directory = os.path.dirname(abs_path)
-            if not os.path.exists(directory):
-                try:
-                    os.makedirs(directory, exist_ok=True)
-                    logging.info(f"Created directory: {directory}")
-                except Exception as e:
-                    logging.error(f"Error creating directory {directory}: {str(e)}")
-                    raise
-                
     def _get_absolute_path(self, path):
         """Convert relative path to absolute path"""
         if not os.path.isabs(path):
@@ -70,12 +55,13 @@ class VectorStoreClient:
                 }
             else:
                 # Only process changed files
-                logging.info(f"Processing {len(changed_files)} changed files")
+                logging.info(f"Processing {len(changed_files)} changed files: {changed_files}")
                 chunks = []
                 # Get relative paths of changed files
                 changed_relative_paths = set()
                 for file_path in changed_files:
                     if not os.path.exists(file_path):
+                        logging.warning(f"File no longer exists: {file_path}")
                         continue
                     # Get relative paths for the file
                     relative_path = os.path.relpath(os.path.dirname(file_path), ingest_path)
@@ -86,8 +72,11 @@ class VectorStoreClient:
                     # Load just this single file
                     file_chunks = load_single_document(file_path, CHUNK_SIZE_MAX)
                     if file_chunks:
-                        chunks.extend(create_document_entries(0, filename, relative_path, file_chunks))
-                        logging.info(f"Loaded and chunked document {relative_file_path} into {len(file_chunks)} chunks")
+                        new_chunks = create_document_entries(0, filename, relative_path, file_chunks)
+                        chunks.extend(new_chunks)
+                        logging.info(f"Loaded and chunked document {relative_file_path} into {len(file_chunks)} chunks with content: {file_chunks[0][:100]}...")
+                    else:
+                        logging.warning(f"No chunks created for file: {file_path}")
             
             if not chunks:
                 if changed_files:
@@ -114,6 +103,7 @@ class VectorStoreClient:
                     ):
                         indices_to_remove.append(idx)
                         del docstore._dict[doc_id]
+                        logging.info(f"Removing document {doc_id} with content: {doc.page_content[:100]}...")
             
             # Remove vectors from FAISS index in reverse order
             if indices_to_remove:
@@ -124,9 +114,9 @@ class VectorStoreClient:
                 
                 # Remove from docstore index
                 for idx in indices_array:
+                    doc_id = index_to_docstore_id[int(idx)]
                     del index_to_docstore_id[int(idx)]
-                
-                logging.info(f"Removed {len(indices_to_remove)} embeddings for deleted/changed files")
+                    logging.info(f"Removed index {idx} for document {doc_id}")
             
             # Add new embeddings
             add_vectors_to_faiss_index(
@@ -142,9 +132,9 @@ class VectorStoreClient:
                 self.vector_store.index,
                 self.vector_store.index_to_docstore_id,
                 self.vector_store.docstore,
-                os.environ["FAISS_INDEX_PATH"],
-                os.environ["METADATA_PATH"],
-                os.environ["DOCSTORE_PATH"]
+                self._get_absolute_path(os.environ["FAISS_INDEX_PATH"]),
+                self._get_absolute_path(os.environ["METADATA_PATH"]),
+                self._get_absolute_path(os.environ["DOCSTORE_PATH"])
             )
             logging.info("Saved updated FAISS index and metadata")
             

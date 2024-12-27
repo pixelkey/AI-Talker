@@ -41,12 +41,13 @@ class IngestHandler(FileSystemEventHandler):
             # Add the changed file to pending changes
             if not event.is_directory:
                 self._pending_changes.add(event.src_path)
+                logging.info(f"Added {event.src_path} to pending changes")
             
             if current_time - self._last_processed_time >= self._debounce_delay:
                 self._last_processed_time = current_time
                 # Process all pending changes
                 if self._pending_changes:
-                    logging.info(f"Processing {len(self._pending_changes)} changed files")
+                    logging.info(f"Processing {len(self._pending_changes)} changed files: {list(self._pending_changes)}")
                     self.on_change_callback(list(self._pending_changes))
                     self._pending_changes.clear()
                 else:

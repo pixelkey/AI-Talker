@@ -54,9 +54,11 @@ def setup_gradio_interface(context):
             
         except Exception as e:
             logging.error(f"Error updating embeddings: {str(e)}")
-
-    ingest_watcher = IngestWatcher(update_embeddings)
-    ingest_watcher.start()
+            
+    # Create and start the watcher
+    watcher = IngestWatcher(update_embeddings)
+    watcher.start()
+    context['watcher'] = watcher  # Store in context to stop later if needed
 
     with gr.Blocks(css=".separator { margin: 8px 0; border-bottom: 1px solid #ddd; }") as app:
         # Output fields

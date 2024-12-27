@@ -19,11 +19,20 @@ def save_faiss_index_metadata_and_docstore(
         for path in [faiss_index_path, metadata_path, docstore_path]:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             
+        # Save FAISS index
         faiss.write_index(faiss_index, faiss_index_path)
+        logging.info(f"Saved FAISS index to {faiss_index_path}")
+        
+        # Save metadata
         with open(metadata_path, "wb") as f:
             pickle.dump(metadata, f)
+        logging.info(f"Saved metadata to {metadata_path}")
+        
+        # Save docstore
         with open(docstore_path, "wb") as f:
             pickle.dump(docstore._dict, f)
+        logging.info(f"Saved docstore to {docstore_path}")
+        
         logging.info("Saved FAISS index, metadata, and docstore to disk.")
     except Exception as e:
         logging.error(f"Error saving FAISS data: {str(e)}")
@@ -72,6 +81,7 @@ def train_faiss_index(vector_store, training_vectors, num_clusters):
 def add_vectors_to_faiss_index(chunks, vector_store, embeddings, normalize_text):
     docstore = vector_store.docstore
     index_to_docstore_id = vector_store.index_to_docstore_id
+    start_idx = max(map(int, index_to_docstore_id.keys())) + 1 if index_to_docstore_id else 0
 
     for idx, doc in enumerate(chunks):
         try:
@@ -95,26 +105,18 @@ def add_vectors_to_faiss_index(chunks, vector_store, embeddings, normalize_text)
             # Add the vector to the index
             vector_store.index.add(vector)
 
-            chunk_id = str(idx)  # Use string IDs for consistency
-            # Add chunk to docstore
+            # Use the document's ID as the docstore key
+            chunk_id = doc["id"]  # Use the document's unique ID
             chunk = Document(
                 page_content=normalized_doc,
-                metadata={
-                    "id": chunk_id,
-                    "doc_id": doc["doc_id"],
-                    "filename": doc["filename"],
-                    "filepath": doc["filepath"],
-                    "chunk_size": doc["chunk_size"],
-                    "overlap_size": doc["overlap_size"],
-                },
+                metadata=doc  # Include all original metadata
             )
-            docstore._dict[chunk_id] = chunk  # Directly add Chunk to the in-memory dictionary
-            index_to_docstore_id[len(index_to_docstore_id)] = chunk_id  # Map index position to chunk ID
-
-            logging.info(f"Added chunk {chunk_id} to vector store with normalized content.")
+            docstore._dict[chunk_id] = chunk
+            index_to_docstore_id[start_idx + idx] = chunk_id
+            logging.info(f"Added chunk {chunk_id} to vector store with normalized content: {normalized_doc[:100]}...")
         except Exception as e:
-            logging.error(f"Error processing chunk {idx}: {str(e)}")
-            continue
+            logging.error(f"Error adding chunk {doc['id']} to vector store: {str(e)}")
+            raise
 
 
 def similarity_search_with_score(query, vector_store, embeddings, EMBEDDING_DIM, k=100):
