@@ -188,11 +188,15 @@ def load_json_content(file_path):
         file_path (str): The path to the JSON file.
     
     Returns:
-        str: The formatted JSON content.
+        str: The formatted JSON content, or empty string if content is empty or invalid.
     """
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
+            # Skip empty arrays or objects
+            if not data:  # This will catch empty lists, dicts, and other "falsy" values
+                logging.info(f"Skipping empty JSON file: {file_path}")
+                return ""
             # Pretty print the JSON with indentation for better readability
             return json.dumps(data, indent=2)
     except json.JSONDecodeError as e:
@@ -239,15 +243,25 @@ def load_documents_from_folder(folder_path, chunk_size_max):
                 else:
                     content = load_file_content(file_path)
                 
-                if content:  # Only process if we got content
-                    chunks = chunk_text_hybrid(content, chunk_size_max)
-                    doc_id = len(documents)  # Use the current number of documents as an ID
+                # Skip files with no content or only whitespace
+                if not content or not content.strip():
+                    logging.info(f"Skipping empty file: {os.path.join(os.path.relpath(root, folder_path), filename)}")
+                    continue
 
-                    # Get Relative path to the file from the root folder and don't include the file name
-                    relative_path = os.path.relpath(root, folder_path)
+                chunks = chunk_text_hybrid(content, chunk_size_max)
+                
+                # Skip if no chunks were created
+                if not chunks:
+                    logging.info(f"No chunks created for file: {os.path.join(os.path.relpath(root, folder_path), filename)}")
+                    continue
+                    
+                doc_id = len(documents)  # Use the current number of documents as an ID
 
-                    documents.extend(create_document_entries(doc_id, filename, relative_path, chunks))
-                    logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(chunks)} chunks")
+                # Get Relative path to the file from the root folder and don't include the file name
+                relative_path = os.path.relpath(root, folder_path)
+
+                documents.extend(create_document_entries(doc_id, filename, relative_path, chunks))
+                logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(chunks)} chunks")
     
     if not documents:
         logging.warning(f"No supported documents found in the folder: {folder_path}")

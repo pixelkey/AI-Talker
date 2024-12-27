@@ -10,26 +10,23 @@ class ChatHistoryManager:
         self.chat_dir = os.path.join(ingest_path, "chat_history")
         self.current_file = None
         self._ensure_chat_directory()
-        self._initialize_chat_file()
+        self._set_current_file()
 
     def _ensure_chat_directory(self):
         """Ensure the chat history directory exists"""
         if not os.path.exists(self.chat_dir):
             os.makedirs(self.chat_dir)
 
-    def _initialize_chat_file(self):
-        """Initialize a new chat file with current timestamp"""
+    def _set_current_file(self):
+        """Set the current chat file name with timestamp"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.current_file = os.path.join(self.chat_dir, f"chat-{timestamp}.json")
-        
-        # Initialize the file with an empty list if it doesn't exist
-        if not os.path.exists(self.current_file):
-            self.save_history([])
 
     def save_history(self, history):
-        """Save chat history to the current file"""
-        with open(self.current_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+        """Save chat history to the current file only if there are messages"""
+        if history:  # Only save if there are messages
+            with open(self.current_file, 'w', encoding='utf-8') as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
 
     def load_history(self):
         """Load chat history from the current file"""
