@@ -14,6 +14,7 @@ class IngestHandler(FileSystemEventHandler):
         self._last_processed_time = time.time()
         self._debounce_delay = 1.0  # Delay in seconds to debounce multiple events
         self._lock = threading.Lock()
+        self._pending_changes = set()  # Track pending file changes
 
     def _should_process_event(self, event) -> bool:
         """Check if the event should be processed"""
@@ -37,10 +38,20 @@ class IngestHandler(FileSystemEventHandler):
             
         current_time = time.time()
         with self._lock:
+            # Add the changed file to pending changes
+            if not event.is_directory:
+                self._pending_changes.add(event.src_path)
+            
             if current_time - self._last_processed_time >= self._debounce_delay:
                 self._last_processed_time = current_time
-                logging.info(f"Processing change event for: {event.src_path}")
-                self.on_change_callback()
+                # Process all pending changes
+                if self._pending_changes:
+                    logging.info(f"Processing {len(self._pending_changes)} changed files")
+                    self.on_change_callback(list(self._pending_changes))
+                    self._pending_changes.clear()
+                else:
+                    # Directory event - process all files
+                    self.on_change_callback(None)
 
     def on_modified(self, event):
         self._handle_event(event)

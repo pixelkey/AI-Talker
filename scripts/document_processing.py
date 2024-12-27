@@ -206,6 +206,54 @@ def load_json_content(file_path):
         logging.error(f"Error reading file {file_path}: {str(e)}")
         return ""
 
+def load_single_document(file_path, chunk_size_max):
+    """
+    Load a single document and create chunks.
+    
+    Args:
+        file_path (str): The path to the file.
+        chunk_size_max (int): The maximum size of each text chunk.
+        
+    Returns:
+        list: List of chunks with metadata, or empty list if file cannot be processed.
+    """
+    file_ext = os.path.splitext(file_path)[1].lower()
+    SUPPORTED_EXTENSIONS = {
+        ".txt": "text",
+        ".json": "json",
+        ".md": "text",
+        ".py": "text",
+        ".js": "text",
+        ".html": "text",
+        ".css": "text",
+        ".yaml": "text",
+        ".yml": "text",
+    }
+    
+    if file_ext not in SUPPORTED_EXTENSIONS:
+        logging.info(f"Unsupported file type: {file_path}")
+        return []
+        
+    # Load content based on file type
+    if SUPPORTED_EXTENSIONS[file_ext] == "json":
+        content = load_json_content(file_path)
+    else:
+        content = load_file_content(file_path)
+    
+    # Skip files with no content or only whitespace
+    if not content or not content.strip():
+        logging.info(f"Skipping empty file: {file_path}")
+        return []
+
+    chunks = chunk_text_hybrid(content, chunk_size_max)
+    
+    # Skip if no chunks were created
+    if not chunks:
+        logging.info(f"No chunks created for file: {file_path}")
+        return []
+        
+    return chunks
+
 def load_documents_from_folder(folder_path, chunk_size_max):
     """
     Load all supported text files from the specified folder and its subdirectories.

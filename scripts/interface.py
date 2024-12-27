@@ -43,19 +43,20 @@ def setup_gradio_interface(context):
         context['client'] = ollama
 
     # Initialize and start the ingest watcher
-    def update_embeddings():
+    def update_embeddings(changed_files=None):
         """Callback function to update embeddings when files change"""
         try:
-            context['vector_store_client'].update_from_ingest_path()
-            logging.info("Updated embeddings from ingest directory")
+            context['vector_store_client'].update_from_ingest_path(changed_files)
+            if changed_files:
+                logging.info(f"Updated embeddings for {len(changed_files)} files")
+            else:
+                logging.info("Updated embeddings from ingest directory")
             
-            # Reset the last processed index since files have changed
-            state["last_processed_index"] = 0
         except Exception as e:
             logging.error(f"Error updating embeddings: {str(e)}")
 
-    watcher = IngestWatcher(update_embeddings)
-    watcher.start()
+    ingest_watcher = IngestWatcher(update_embeddings)
+    ingest_watcher.start()
 
     with gr.Blocks(css=".separator { margin: 8px 0; border-bottom: 1px solid #ddd; }") as app:
         # Output fields
@@ -147,11 +148,16 @@ def setup_gradio_interface(context):
                 history[-1] = (input_text, response)
                 # Save updated history
                 chat_manager.save_history(history)
-                # Update embeddings with new chat history
+                
+                # Generate speech for the response first
+                audio_path = text_to_speech(response)
+                yield history, refs, "", history, audio_path, "Response complete, starting recording..."
+                
+                # Update embeddings after response and audio are complete
                 new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
                 if new_messages:
                     chat_text = chat_manager.format_for_embedding(new_messages)
-                    # Add chat history to vector store
+                    # Add chat history to vector store directly
                     vector_store = context['vector_store']
                     vectors = context['embeddings'].embed_documents([chat_text])
                     vectors = np.array(vectors, dtype="float32")
@@ -175,9 +181,17 @@ def setup_gradio_interface(context):
                     vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
                     
                     state["last_processed_index"] = new_last_index
-                # Generate speech for the response
-                audio_path = text_to_speech(response)
-                yield history, refs, "", history, audio_path, "Response complete, starting recording..."
+                    
+                    # Save the updated index
+                    save_faiss_index_metadata_and_docstore(
+                        vector_store.index,
+                        vector_store.index_to_docstore_id,
+                        vector_store.docstore,
+                        os.environ["FAISS_INDEX_PATH"],
+                        os.environ["METADATA_PATH"],
+                        os.environ["DOCSTORE_PATH"]
+                    )
+                    logging.info("Updated embeddings with new chat history")
             else:
                 response = "I don't have any relevant information to help with that query."
                 history[-1] = (input_text, response)

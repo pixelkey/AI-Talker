@@ -1,6 +1,6 @@
 import os
 import logging
-from document_processing import load_documents_from_folder
+from document_processing import load_documents_from_folder, load_single_document, create_document_entries
 from faiss_utils import (
     add_vectors_to_faiss_index,
     save_faiss_index_metadata_and_docstore,
@@ -41,23 +41,51 @@ class VectorStoreClient:
             return os.path.join(script_dir, path.lstrip("../"))
         return path
         
-    def update_from_ingest_path(self):
-        """Update embeddings from all files in the ingest path"""
+    def update_from_ingest_path(self, changed_files=None):
+        """
+        Update embeddings from files in the ingest path.
+        
+        Args:
+            changed_files (list, optional): List of files that have changed.
+                If None, updates all files (used for initial load).
+        """
         try:
             # Get absolute ingest path
             ingest_path = self._get_absolute_path(os.environ["INGEST_PATH"])
-            logging.info(f"Loading documents from {ingest_path}")
             
-            # Load all current documents
-            chunks = load_documents_from_folder(ingest_path, CHUNK_SIZE_MAX)
+            if changed_files is None:
+                # Initial load - process all files
+                logging.info(f"Loading all documents from {ingest_path}")
+                chunks = load_documents_from_folder(ingest_path, CHUNK_SIZE_MAX)
+            else:
+                # Only process changed files
+                logging.info(f"Processing {len(changed_files)} changed files")
+                chunks = []
+                for file_path in changed_files:
+                    if not os.path.exists(file_path):
+                        continue
+                    # Get relative paths for the file
+                    relative_path = os.path.relpath(os.path.dirname(file_path), ingest_path)
+                    filename = os.path.basename(file_path)
+                    
+                    # Load just this single file
+                    file_chunks = load_single_document(file_path, CHUNK_SIZE_MAX)
+                    if file_chunks:
+                        chunks.extend(create_document_entries(0, filename, relative_path, file_chunks))
+                        logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(file_chunks)} chunks")
             
-            # Get set of current file paths
+            if not chunks:
+                if changed_files:
+                    logging.info("No valid chunks found in changed files")
+                return
+                
+            # Get paths of current chunks
             current_files = {
                 os.path.join(doc["filepath"], doc["filename"])
                 for doc in chunks
             }
             
-            # Remove embeddings for files that no longer exist
+            # Remove embeddings for deleted/changed files
             docstore = self.vector_store.docstore
             index_to_docstore_id = self.vector_store.index_to_docstore_id
             
@@ -70,42 +98,45 @@ class VectorStoreClient:
                         doc.metadata.get("filepath", ""),
                         doc.metadata.get("filename", "")
                     )
-                    if filepath not in current_files and doc.metadata.get("doc_id") != "chat_history":
+                    # Remove if file is deleted or changed, but never remove chat history
+                    if doc.metadata.get("doc_id") != "chat_history" and (
+                        (changed_files is None and filepath not in current_files) or
+                        (changed_files is not None and filepath in [os.path.relpath(f, ingest_path) for f in changed_files])
+                    ):
                         indices_to_remove.append(idx)
                         del docstore._dict[doc_id]
             
             # Remove vectors from FAISS index in reverse order
-            for idx in sorted(indices_to_remove, reverse=True):
-                self.vector_store.index.remove_ids(idx)
-                del index_to_docstore_id[idx]
-            
             if indices_to_remove:
-                logging.info(f"Removed {len(indices_to_remove)} embeddings for deleted files")
+                # Convert indices to numpy array for FAISS
+                import numpy as np
+                indices_array = np.array(sorted(indices_to_remove, reverse=True), dtype=np.int64)
+                self.vector_store.index.remove_ids(indices_array)
+                
+                # Remove from docstore index
+                for idx in indices_array:
+                    del index_to_docstore_id[int(idx)]
+                
+                logging.info(f"Removed {len(indices_to_remove)} embeddings for deleted/changed files")
             
             # Add new embeddings
-            if chunks:
-                add_vectors_to_faiss_index(
-                    chunks,
-                    self.vector_store,
-                    self.embeddings,
-                    self.normalize_text
-                )
-                logging.info(f"Added {len(chunks)} new chunks to vector store")
+            add_vectors_to_faiss_index(
+                chunks,
+                self.vector_store,
+                self.embeddings,
+                self.normalize_text
+            )
+            logging.info(f"Added {len(chunks)} new chunks")
             
-            # Save updated index
-            faiss_path = self._get_absolute_path(os.environ["FAISS_INDEX_PATH"])
-            metadata_path = self._get_absolute_path(os.environ["METADATA_PATH"])
-            docstore_path = self._get_absolute_path(os.environ["DOCSTORE_PATH"])
-            
+            # Save updated index and metadata
             save_faiss_index_metadata_and_docstore(
                 self.vector_store.index,
                 self.vector_store.index_to_docstore_id,
                 self.vector_store.docstore,
-                faiss_path,
-                metadata_path,
-                docstore_path
+                os.environ["FAISS_INDEX_PATH"],
+                os.environ["METADATA_PATH"],
+                os.environ["DOCSTORE_PATH"]
             )
-            
             logging.info("Saved updated FAISS index and metadata")
             
         except Exception as e:
