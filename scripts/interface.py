@@ -40,7 +40,7 @@ def setup_gradio_interface(context):
             )
 
         with gr.Row():
-            submit_button = gr.Button("Submit")
+            submit_button = gr.Button("Submit", visible=True)
             clear_button = gr.Button("Clear")
 
         # Initialize session state separately for each user
@@ -67,7 +67,7 @@ def setup_gradio_interface(context):
         def transcribe_audio(audio_path):
             """Transcribe audio file to text"""
             if audio_path is None:
-                return "", "No audio received"
+                return "", "", False, "No audio received"
             
             try:
                 # Initialize recognizer
@@ -79,9 +79,10 @@ def setup_gradio_interface(context):
                 
                 # Perform the recognition
                 text = recognizer.recognize_google(audio)
-                return text, f"Transcribed: {text}"
+                # Return text and trigger submit
+                return text, text, True, f"Transcribed: {text}"
             except Exception as e:
-                return "", f"Error transcribing audio: {str(e)}"
+                return "", "", False, f"Error transcribing audio: {str(e)}"
 
         # Define a function to handle both reference retrieval and LLM response generation
         def handle_user_input(input_text, history):
@@ -129,11 +130,20 @@ def setup_gradio_interface(context):
             outputs=[chat_history, references, input_text, session_state, audio_output, debug_output],
         )
 
-        # Add audio input handler
+        # Add audio input handler with auto-submit
         audio_input.change(
             transcribe_audio,
             inputs=[audio_input],
-            outputs=[input_text, debug_output]
+            outputs=[
+                input_text,  # Update the input text
+                gr.Textbox(visible=False),  # Temporary storage
+                gr.Checkbox(visible=False),  # Trigger for submit
+                debug_output
+            ],
+        ).then(
+            handle_user_input,  # Chain to handle_user_input
+            inputs=[input_text, session_state],
+            outputs=[chat_history, references, input_text, session_state, audio_output, debug_output],
         )
 
         # Add text input submission via Enter key

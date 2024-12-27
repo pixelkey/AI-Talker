@@ -17,7 +17,8 @@ env_config = {
     "SYSTEM_PROMPT": {
         "default": (
             "You are provided with additional information from your memory relative to the conversation."
-            "If the memory does not seem relevant just ignore the memory and respond to the user as normal."
+            " If the memory does not seem relevant just ignore the memory and respond to the user as normal."
+            "Keep your answers relatively short unless the answer requires a longer response."
         ),
         "type": str
     },
