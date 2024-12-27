@@ -34,8 +34,22 @@ def load_faiss_index_metadata_and_docstore(
         with open(metadata_path, "rb") as f:
             metadata = pickle.load(f)
         with open(docstore_path, "rb") as f:
-            docstore_data = pickle.load(f)
-            docstore = InMemoryDocstore(docstore_data)
+            raw_docstore = pickle.load(f)
+        
+        # Convert raw dictionary data back into Document objects
+        docstore = InMemoryDocstore({})
+        for doc_id, doc_data in raw_docstore.items():
+            if isinstance(doc_data, str):
+                # If the stored data is just a string, create a Document object
+                doc = Document(page_content=doc_data)
+            else:
+                # If it's already a Document object or has the expected structure
+                doc = doc_data if isinstance(doc_data, Document) else Document(
+                    page_content=doc_data.get('page_content', ''),
+                    metadata=doc_data.get('metadata', {})
+                )
+            docstore._dict[doc_id] = doc
+
         logging.info("Loaded FAISS index, metadata, and docstore from disk.")
         return faiss_index, metadata, docstore
     return None, None, None
@@ -52,67 +66,102 @@ def add_vectors_to_faiss_index(chunks, vector_store, embeddings, normalize_text)
     index_to_docstore_id = vector_store.index_to_docstore_id
 
     for idx, doc in enumerate(chunks):
-        normalized_doc = normalize_text(doc["content"])
-        # Use embed_documents for document embeddings
-        vectors = embeddings.embed_documents([normalized_doc])[0]
-        vectors = np.array(vectors, dtype="float32").reshape(1, -1)
-        # Normalize the vector
-        faiss.normalize_L2(vectors)
-        # Add the vector to the index
-        vector_store.index.add(vectors)
+        try:
+            normalized_doc = normalize_text(doc["content"])
+            # Use embed_documents for document embeddings
+            vector = embeddings.embed_documents([normalized_doc])
+            if not isinstance(vector, (list, np.ndarray)):
+                raise ValueError(f"Expected list or ndarray from embed_documents, got {type(vector)}")
+            
+            # Ensure we have a proper numpy array
+            if isinstance(vector, list):
+                vector = vector[0] if isinstance(vector[0], (list, np.ndarray)) else vector
+                vector = np.array(vector, dtype="float32")
+            
+            # Reshape to 2D if necessary
+            if vector.ndim == 1:
+                vector = vector.reshape(1, -1)
+            
+            # Normalize the vector
+            faiss.normalize_L2(vector)
+            # Add the vector to the index
+            vector_store.index.add(vector)
 
-        chunk_id = str(idx)  # Use string IDs for consistency
-        # Add chunk to docstore
-        chunk = Document(
-            page_content=normalized_doc,
-            metadata={
-                "id": chunk_id,
-                "doc_id": doc["doc_id"],
-                "filename": doc["filename"],
-                "filepath": doc["filepath"],
-                "chunk_size": doc["chunk_size"],
-                "overlap_size": doc["overlap_size"],
-            },
-        )
-        docstore._dict[chunk_id] = chunk  # Directly add Chunk to the in-memory dictionary
-        index_to_docstore_id[len(index_to_docstore_id)] = chunk_id  # Map index position to chunk ID
+            chunk_id = str(idx)  # Use string IDs for consistency
+            # Add chunk to docstore
+            chunk = Document(
+                page_content=normalized_doc,
+                metadata={
+                    "id": chunk_id,
+                    "doc_id": doc["doc_id"],
+                    "filename": doc["filename"],
+                    "filepath": doc["filepath"],
+                    "chunk_size": doc["chunk_size"],
+                    "overlap_size": doc["overlap_size"],
+                },
+            )
+            docstore._dict[chunk_id] = chunk  # Directly add Chunk to the in-memory dictionary
+            index_to_docstore_id[len(index_to_docstore_id)] = chunk_id  # Map index position to chunk ID
 
-        logging.info(f"Added chunk {chunk_id} to vector store with normalized content.")
+            logging.info(f"Added chunk {chunk_id} to vector store with normalized content.")
+        except Exception as e:
+            logging.error(f"Error processing chunk {idx}: {str(e)}")
+            continue
 
 
 def similarity_search_with_score(query, vector_store, embeddings, EMBEDDING_DIM, k=100):
-    # Embed the query
-    query_vector = embeddings.embed_query(query)
-    query_vector = np.array(query_vector, dtype="float32").reshape(1, -1)
-    # Normalize query vector for cosine similarity
-    faiss.normalize_L2(query_vector)
+    try:
+        # Embed the query
+        query_vector = embeddings.embed_query(query)
+        if not isinstance(query_vector, (list, np.ndarray)):
+            raise ValueError(f"Expected list or ndarray from embed_query, got {type(query_vector)}")
+        
+        # Convert to numpy array if needed
+        if isinstance(query_vector, list):
+            query_vector = np.array(query_vector, dtype="float32")
+        
+        # Reshape to 2D if necessary
+        if query_vector.ndim == 1:
+            query_vector = query_vector.reshape(1, -1)
 
-    logging.info(f"Query embedding shape: {query_vector.shape}")
-    logging.info(f"Query embedding first 5 values: {query_vector[0][:5]}")
+        logging.info(f"Query embedding shape: {query_vector.shape}")
+        logging.info(f"Query embedding first 5 values: {query_vector[0][:5]}")
 
-    # Ensure query vector dimensionality matches the FAISS index dimensionality
-    assert query_vector.shape[1] == EMBEDDING_DIM, (
-        f"Query vector dimension {query_vector.shape[1]} does not match index dimension {EMBEDDING_DIM}"
-    )
+        # Ensure query vector dimensionality matches the FAISS index dimensionality
+        if query_vector.shape[1] != EMBEDDING_DIM:
+            raise ValueError(
+                f"Query vector dimension {query_vector.shape[1]} does not match index dimension {EMBEDDING_DIM}"
+            )
 
-    # Search the FAISS index
-    D, I = vector_store.index.search(query_vector, k)
+        # Normalize query vector for cosine similarity
+        faiss.normalize_L2(query_vector)
 
-    results = []
-    for i, score in zip(I[0], D[0]):
-        if i != -1:  # Ensure valid index
-            try:
-                chunk_id = vector_store.index_to_docstore_id.get(i, None)
-                if chunk_id is None:
-                    raise KeyError(f"Chunk ID {i} not found in mapping.")
-                doc = vector_store.docstore.search(chunk_id)
-                results.append({
-                    "id": chunk_id,
-                    "content": doc.page_content,
-                    "score": float(score),
-                    "metadata": doc.metadata
-                })
-                logging.info(f"Matched chunk {chunk_id} with score {score} and content: {doc.page_content[:200]}...")
-            except KeyError as e:
-                logging.error(f"KeyError finding chunk id {i}: {e}")
-    return results
+        # Search the FAISS index
+        D, I = vector_store.index.search(query_vector, k)
+
+        results = []
+        for i, score in zip(I[0], D[0]):
+            if i != -1:  # Ensure valid index
+                try:
+                    chunk_id = vector_store.index_to_docstore_id.get(i, None)
+                    if chunk_id is None:
+                        raise KeyError(f"Chunk ID {i} not found in mapping.")
+                    doc = vector_store.docstore.search(chunk_id)
+                    if isinstance(doc, str):
+                        # If doc is a string, create a Document object
+                        doc = Document(page_content=doc)
+                    results.append({
+                        "id": chunk_id,
+                        "content": doc.page_content,
+                        "score": float(score),
+                        "metadata": getattr(doc, 'metadata', {})
+                    })
+                    logging.info(f"Matched chunk {chunk_id} with score {score} and content: {doc.page_content[:200]}...")
+                except KeyError as e:
+                    logging.error(f"KeyError finding chunk id {i}: {e}")
+                except Exception as e:
+                    logging.error(f"Error processing search result {i}: {str(e)}")
+        return results
+    except Exception as e:
+        logging.error(f"Error in similarity search: {str(e)}")
+        return []
