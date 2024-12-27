@@ -2,6 +2,8 @@
 
 import gradio as gr
 from chatbot_functions import chatbot_response, clear_history, retrieve_and_format_references
+from chat_history import ChatHistoryManager
+from ingest_watcher import IngestWatcher
 import speech_recognition as sr
 import numpy as np
 import io
@@ -9,6 +11,9 @@ import soundfile as sf
 from gtts import gTTS
 import tempfile
 import os
+import logging
+import faiss
+from langchain.docstore.document import Document
 
 def setup_gradio_interface(context):
     """
@@ -18,6 +23,22 @@ def setup_gradio_interface(context):
     Returns:
         gr.Blocks: Gradio interface object.
     """
+    # Initialize chat history manager and state
+    chat_manager = ChatHistoryManager()
+    state = {"last_processed_index": 0}
+
+    # Initialize and start the ingest watcher
+    def update_embeddings():
+        """Callback function to update embeddings when files change"""
+        try:
+            context['client'].update_from_ingest_path()
+            logging.info("Updated embeddings from ingest directory")
+        except Exception as e:
+            logging.error(f"Error updating embeddings: {str(e)}")
+
+    watcher = IngestWatcher(update_embeddings)
+    watcher.start()
+
     with gr.Blocks(css=".separator { margin: 8px 0; border-bottom: 1px solid #ddd; }") as app:
         # Output fields
         chat_history = gr.Chatbot(label="Chat History", height=400)
@@ -98,6 +119,8 @@ def setup_gradio_interface(context):
             
             # Add user message to history
             history.append((input_text, None))
+            # Save history to file
+            chat_manager.save_history(history)
             yield history, refs, "", history, None, ""
 
             # Generate the LLM response if references were found
@@ -105,12 +128,43 @@ def setup_gradio_interface(context):
                 _, response, _ = chatbot_response(input_text, context_documents, context, history)
                 # Add assistant response to history
                 history[-1] = (input_text, response)
+                # Save updated history
+                chat_manager.save_history(history)
+                # Update embeddings with new chat history
+                new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
+                if new_messages:
+                    chat_text = chat_manager.format_for_embedding(new_messages)
+                    # Add chat history to vector store
+                    vector_store = context['vector_store']
+                    vectors = context['embeddings'].embed_documents([chat_text])
+                    vectors = np.array(vectors, dtype="float32")
+                    faiss.normalize_L2(vectors)
+                    vector_store.index.add(vectors)
+                    
+                    # Add to docstore
+                    chunk_id = str(len(vector_store.index_to_docstore_id))
+                    chunk = Document(
+                        page_content=chat_text,
+                        metadata={
+                            "id": chunk_id,
+                            "doc_id": "chat_history",
+                            "filename": os.path.basename(chat_manager.current_file),
+                            "filepath": "chat_history",
+                            "chunk_size": len(chat_text),
+                            "overlap_size": 0,
+                        },
+                    )
+                    vector_store.docstore._dict[chunk_id] = chunk
+                    vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
+                    
+                    state["last_processed_index"] = new_last_index
                 # Generate speech for the response
                 audio_path = text_to_speech(response)
                 yield history, refs, "", history, audio_path, "Response complete, starting recording..."
             else:
                 response = "I don't have any relevant information to help with that query."
                 history[-1] = (input_text, response)
+                chat_manager.save_history(history)
                 audio_path = text_to_speech(response)
                 yield history, refs, "", history, audio_path, "Response complete, starting recording..."
 
