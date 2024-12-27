@@ -8,6 +8,7 @@ from nltk.tokenize import sent_tokenize, blankline_tokenize
 from nltk import download as nltk_download
 from dotenv import load_dotenv
 import re
+import json
 
 # Ensure that the 'punkt' tokenizer is downloaded.
 # This is used for sentence and paragraph tokenization for chunking.
@@ -166,39 +167,6 @@ def finalize_chunk(current_chunk, chunks):
         chunks.append((chunk_text, chunk_size))
     return [], 0
 
-def load_documents_from_folder(folder_path, chunk_size_max):
-    """
-    Load all text files from the specified folder and its subdirectories.
-    
-    Args:
-        folder_path (str): The root folder path to search for text files.
-        chunk_size_max (int): The maximum size of each text chunk.
-    
-    Returns:
-        list: List of document dictionaries containing the content and metadata.
-    """
-    documents = []
-    
-    # Traverse the directory tree and find all text files
-    for root, dirs, files in os.walk(folder_path):
-        for filename in files:
-            if filename.endswith(".txt"):
-                file_path = os.path.join(root, filename)
-                content = load_file_content(file_path)
-                chunks = chunk_text_hybrid(content, chunk_size_max)
-                doc_id = len(documents)  # Use the current number of documents as an ID
-
-                # Get Relative path to the file from the root folder and don't include the file name
-                relative_path = os.path.relpath(root, folder_path)
-
-                documents.extend(create_document_entries(doc_id, filename, relative_path, chunks))
-                logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(chunks)} chunks")
-    
-    if not documents:
-        logging.error(f"No documents found in the folder: {folder_path}")
-    
-    return documents
-
 def load_file_content(file_path):
     """
     Load the content of a text file.
@@ -211,6 +179,81 @@ def load_file_content(file_path):
     """
     with open(file_path, "r", encoding="utf-8") as file:
         return file.read()
+
+def load_json_content(file_path):
+    """
+    Load and format the content of a JSON file.
+    
+    Args:
+        file_path (str): The path to the JSON file.
+    
+    Returns:
+        str: The formatted JSON content.
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # Pretty print the JSON with indentation for better readability
+            return json.dumps(data, indent=2)
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON file {file_path}: {str(e)}")
+        return ""
+    except Exception as e:
+        logging.error(f"Error reading file {file_path}: {str(e)}")
+        return ""
+
+def load_documents_from_folder(folder_path, chunk_size_max):
+    """
+    Load all supported text files from the specified folder and its subdirectories.
+    
+    Args:
+        folder_path (str): The root folder path to search for text files.
+        chunk_size_max (int): The maximum size of each text chunk.
+    
+    Returns:
+        list: List of document dictionaries containing the content and metadata.
+    """
+    SUPPORTED_EXTENSIONS = {
+        ".txt": "text",
+        ".json": "json",
+        ".md": "text",
+        ".py": "text",
+        ".js": "text",
+        ".html": "text",
+        ".css": "text",
+        ".yaml": "text",
+        ".yml": "text",
+    }
+    documents = []
+    
+    # Traverse the directory tree and find all supported files
+    for root, dirs, files in os.walk(folder_path):
+        for filename in files:
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext in SUPPORTED_EXTENSIONS:
+                file_path = os.path.join(root, filename)
+                
+                # Load content based on file type
+                if SUPPORTED_EXTENSIONS[file_ext] == "json":
+                    content = load_json_content(file_path)
+                else:
+                    content = load_file_content(file_path)
+                
+                if content:  # Only process if we got content
+                    chunks = chunk_text_hybrid(content, chunk_size_max)
+                    doc_id = len(documents)  # Use the current number of documents as an ID
+
+                    # Get Relative path to the file from the root folder and don't include the file name
+                    relative_path = os.path.relpath(root, folder_path)
+
+                    documents.extend(create_document_entries(doc_id, filename, relative_path, chunks))
+                    logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(chunks)} chunks")
+    
+    if not documents:
+        logging.warning(f"No supported documents found in the folder: {folder_path}")
+        logging.info(f"Supported file types: {', '.join(SUPPORTED_EXTENSIONS.keys())}")
+    
+    return documents
 
 def create_document_entries(doc_id, filename, filepath, chunks):
     """

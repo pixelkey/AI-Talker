@@ -45,7 +45,38 @@ def load_or_initialize_vector_store(
     documents = load_documents_from_folder(ingest_path, CHUNK_SIZE_MAX)
 
     if not documents:
-        raise ValueError(f"No documents found in the folder: {ingest_path}")
+        # Initialize an empty vector store if no documents exist
+        quantizer = faiss.IndexFlatIP(EMBEDDING_DIM)
+        index = faiss.IndexIVFFlat(
+            quantizer, EMBEDDING_DIM, 10, faiss.METRIC_INNER_PRODUCT  # Start with minimum 10 clusters
+        )
+        # Train with a single zero vector since FAISS requires training
+        zero_vector = np.zeros((1, EMBEDDING_DIM), dtype="float32")
+        index.train(zero_vector)
+        index.nprobe = 10
+
+        docstore = InMemoryDocstore({})
+        index_to_docstore_id = {}
+
+        vector_store = FAISS(
+            embedding_function=embeddings,
+            index=index,
+            docstore=docstore,
+            index_to_docstore_id=index_to_docstore_id,
+        )
+
+        # Save the empty index
+        save_faiss_index_metadata_and_docstore(
+            vector_store.index,
+            index_to_docstore_id,
+            docstore,
+            faiss_index_path,
+            metadata_path,
+            docstore_path
+        )
+
+        logging.info("Initialized empty vector store - ready for documents to be added.")
+        return vector_store, index_to_docstore_id
 
     logging.info(f"Total chunks loaded: {len(documents)}")
 
