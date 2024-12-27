@@ -26,19 +26,25 @@ class VectorStoreClient:
             if not os.path.isabs(path):
                 # Convert relative path to absolute
                 script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                path = os.path.join(script_dir, path.lstrip("../"))
+                abs_path = os.path.abspath(os.path.join(script_dir, path.lstrip("../")))
+            else:
+                abs_path = path
             
             # Create directory if it doesn't exist
-            directory = os.path.dirname(path)
+            directory = os.path.dirname(abs_path)
             if not os.path.exists(directory):
-                os.makedirs(directory)
-                logging.info(f"Created directory: {directory}")
+                try:
+                    os.makedirs(directory, exist_ok=True)
+                    logging.info(f"Created directory: {directory}")
+                except Exception as e:
+                    logging.error(f"Error creating directory {directory}: {str(e)}")
+                    raise
                 
     def _get_absolute_path(self, path):
         """Convert relative path to absolute path"""
         if not os.path.isabs(path):
             script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            return os.path.join(script_dir, path.lstrip("../"))
+            return os.path.abspath(os.path.join(script_dir, path))
         return path
         
     def update_from_ingest_path(self, changed_files=None):
@@ -57,34 +63,37 @@ class VectorStoreClient:
                 # Initial load - process all files
                 logging.info(f"Loading all documents from {ingest_path}")
                 chunks = load_documents_from_folder(ingest_path, CHUNK_SIZE_MAX)
+                # Get paths of all current chunks
+                current_files = {
+                    os.path.join(doc["filepath"], doc["filename"])
+                    for doc in chunks
+                }
             else:
                 # Only process changed files
                 logging.info(f"Processing {len(changed_files)} changed files")
                 chunks = []
+                # Get relative paths of changed files
+                changed_relative_paths = set()
                 for file_path in changed_files:
                     if not os.path.exists(file_path):
                         continue
                     # Get relative paths for the file
                     relative_path = os.path.relpath(os.path.dirname(file_path), ingest_path)
                     filename = os.path.basename(file_path)
+                    relative_file_path = os.path.join(relative_path, filename)
+                    changed_relative_paths.add(relative_file_path)
                     
                     # Load just this single file
                     file_chunks = load_single_document(file_path, CHUNK_SIZE_MAX)
                     if file_chunks:
                         chunks.extend(create_document_entries(0, filename, relative_path, file_chunks))
-                        logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(file_chunks)} chunks")
+                        logging.info(f"Loaded and chunked document {relative_file_path} into {len(file_chunks)} chunks")
             
             if not chunks:
                 if changed_files:
                     logging.info("No valid chunks found in changed files")
                 return
                 
-            # Get paths of current chunks
-            current_files = {
-                os.path.join(doc["filepath"], doc["filename"])
-                for doc in chunks
-            }
-            
             # Remove embeddings for deleted/changed files
             docstore = self.vector_store.docstore
             index_to_docstore_id = self.vector_store.index_to_docstore_id
@@ -101,7 +110,7 @@ class VectorStoreClient:
                     # Remove if file is deleted or changed, but never remove chat history
                     if doc.metadata.get("doc_id") != "chat_history" and (
                         (changed_files is None and filepath not in current_files) or
-                        (changed_files is not None and filepath in [os.path.relpath(f, ingest_path) for f in changed_files])
+                        (changed_files is not None and filepath in changed_relative_paths)
                     ):
                         indices_to_remove.append(idx)
                         del docstore._dict[doc_id]

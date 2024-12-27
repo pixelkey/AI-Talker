@@ -14,12 +14,20 @@ import config
 def save_faiss_index_metadata_and_docstore(
     faiss_index, metadata, docstore, faiss_index_path, metadata_path, docstore_path
 ):
-    faiss.write_index(faiss_index, faiss_index_path)
-    with open(metadata_path, "wb") as f:
-        pickle.dump(metadata, f)
-    with open(docstore_path, "wb") as f:
-        pickle.dump(docstore._dict, f)
-    logging.info("Saved FAISS index, metadata, and docstore to disk.")
+    try:
+        # Ensure parent directories exist
+        for path in [faiss_index_path, metadata_path, docstore_path]:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            
+        faiss.write_index(faiss_index, faiss_index_path)
+        with open(metadata_path, "wb") as f:
+            pickle.dump(metadata, f)
+        with open(docstore_path, "wb") as f:
+            pickle.dump(docstore._dict, f)
+        logging.info("Saved FAISS index, metadata, and docstore to disk.")
+    except Exception as e:
+        logging.error(f"Error saving FAISS data: {str(e)}")
+        raise
 
 
 def load_faiss_index_metadata_and_docstore(
