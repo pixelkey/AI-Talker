@@ -16,33 +16,42 @@ class IngestHandler(FileSystemEventHandler):
         self._lock = threading.Lock()
 
     def _should_process_event(self, event) -> bool:
-        """Check if the event should be processed based on file type and path"""
+        """Check if the event should be processed"""
+        # Process all directory events
         if event.is_directory:
-            return False
+            return True
             
         file_path = Path(event.src_path)
         
-        # Ignore temporary files and hidden files
-        if file_path.name.startswith('.') or file_path.name.startswith('~'):
+        # Ignore temporary files, hidden files, and system files
+        if file_path.name.startswith(('.', '~', '$')):
             return False
             
-        # Only process text-based files
-        allowed_extensions = {'.txt', '.md', '.json', '.py', '.html', '.csv'}
-        return file_path.suffix.lower() in allowed_extensions
+        # Process all other files
+        return True
 
     def _handle_event(self, event):
         """Handle file system event with debouncing"""
+        if not self._should_process_event(event):
+            return
+            
         current_time = time.time()
         with self._lock:
             if current_time - self._last_processed_time >= self._debounce_delay:
                 self._last_processed_time = current_time
-                if self._should_process_event(event):
-                    self.on_change_callback()
+                logging.info(f"Processing change event for: {event.src_path}")
+                self.on_change_callback()
 
     def on_modified(self, event):
         self._handle_event(event)
 
     def on_created(self, event):
+        self._handle_event(event)
+        
+    def on_deleted(self, event):
+        self._handle_event(event)
+        
+    def on_moved(self, event):
         self._handle_event(event)
 
 class IngestWatcher:

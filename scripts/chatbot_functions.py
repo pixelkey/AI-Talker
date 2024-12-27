@@ -195,16 +195,16 @@ def generate_local_response(input_text, context_documents, context, history):
 
     # Generate the LLM response
     try:
-        response_text = context["client"].invoke(
-            prompt,
-            max_tokens=max_tokens,
+        response = context["client"].chat(
+            model=context["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
         )
+        response_text = response['message']['content']
         logging.info("Generated LLM response successfully.")
+        return response_text
     except Exception as e:
-        logging.error(f"Error generating response: {e}")
+        logging.error(f"Error in local LLM response: {e}")
         return None
-
-    return response_text
 
 def build_local_prompt(system_prompt, history, context_documents, input_text):
     """

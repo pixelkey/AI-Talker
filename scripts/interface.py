@@ -14,6 +14,9 @@ import os
 import logging
 import faiss
 from langchain.docstore.document import Document
+from vector_store_client import VectorStoreClient
+from document_processing import normalize_text
+import ollama
 
 def setup_gradio_interface(context):
     """
@@ -27,12 +30,23 @@ def setup_gradio_interface(context):
     chat_manager = ChatHistoryManager()
     state = {"last_processed_index": 0}
 
+    # Initialize vector store client and LLM client
+    vector_store_client = VectorStoreClient(
+        context['vector_store'],
+        context['embeddings'],
+        normalize_text
+    )
+    context['vector_store_client'] = vector_store_client
+    
+    # Initialize Ollama client for local LLM
+    if context.get('MODEL_SOURCE') == 'local':
+        context['client'] = ollama
+
     # Initialize and start the ingest watcher
     def update_embeddings():
         """Callback function to update embeddings when files change"""
         try:
-            # Update embeddings from all files in ingest directory
-            context['client'].update_from_ingest_path()
+            context['vector_store_client'].update_from_ingest_path()
             logging.info("Updated embeddings from ingest directory")
             
             # Reset the last processed index since files have changed
