@@ -67,7 +67,6 @@ def setup_gradio_interface(context):
             autoplay=True,
             show_download_button=False
         )
-        debug_output = gr.Textbox(label="Debug Output", lines=2, interactive=False)
 
         # Input fields
         with gr.Row():
@@ -127,8 +126,8 @@ def setup_gradio_interface(context):
         # Define a function to handle both reference retrieval and LLM response generation
         def handle_user_input(input_text, history):
             if not input_text.strip():
-                return history, "", "", history, None, "No input provided"
-                
+                return history, "", "", history, None, ""
+
             refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
             
             # Initialize history if needed
@@ -194,7 +193,7 @@ def setup_gradio_interface(context):
         submit_button.click(
             handle_user_input,
             inputs=[input_text, session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output, debug_output],
+            outputs=[chat_history, references, input_text, session_state, audio_output],
         ).success(
             lambda: None,
             None,
@@ -216,19 +215,18 @@ def setup_gradio_interface(context):
                 input_text,  # Update the input text
                 gr.Textbox(visible=False),  # Temporary storage
                 gr.Checkbox(visible=False),  # Trigger for submit
-                debug_output
             ],
         ).then(
             handle_user_input,  # Chain to handle_user_input
             inputs=[input_text, session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output, debug_output],
+            outputs=[chat_history, references, input_text, session_state, audio_output],
         )
 
         # Add text input submission via Enter key
         input_text.submit(
             handle_user_input,
             inputs=[input_text, session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output, debug_output],
+            outputs=[chat_history, references, input_text, session_state, audio_output],
         )
 
     return app

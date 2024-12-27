@@ -21,7 +21,7 @@ def retrieve_and_format_references(input_text, context):
     # Retrieve relevant documents
     filtered_docs = retrieve_relevant_documents(normalized_input, context)
     if not filtered_docs:
-        return "No relevant documents found.", None, None
+        return "", None, None
 
     # Construct the references
     references = build_references(filtered_docs)
