@@ -36,7 +36,8 @@ def setup_gradio_interface(context):
             audio_input = gr.Audio(
                 label="Voice Input", 
                 sources=["microphone"],
-                type="filepath"
+                type="filepath",
+                streaming=False
             )
 
         with gr.Row():
@@ -87,9 +88,9 @@ def setup_gradio_interface(context):
         # Define a function to handle both reference retrieval and LLM response generation
         def handle_user_input(input_text, history):
             if not input_text.strip():
-                return history, references.value, "", history, None, "No input provided"
+                return history, "", "", history, None, "No input provided"
                 
-            references, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
+            refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
             
             # Initialize history if needed
             if history is None:
@@ -97,7 +98,7 @@ def setup_gradio_interface(context):
             
             # Add user message to history
             history.append((input_text, None))
-            yield history, references, "", history, None, ""
+            yield history, refs, "", history, None, ""
 
             # Generate the LLM response if references were found
             if filtered_docs:
@@ -106,12 +107,12 @@ def setup_gradio_interface(context):
                 history[-1] = (input_text, response)
                 # Generate speech for the response
                 audio_path = text_to_speech(response)
-                yield history, references, "", history, audio_path, ""
+                yield history, refs, "", history, audio_path, "Response complete, starting recording..."
             else:
                 response = "I don't have any relevant information to help with that query."
                 history[-1] = (input_text, response)
                 audio_path = text_to_speech(response)
-                yield history, references, "", history, audio_path, ""
+                yield history, refs, "", history, audio_path, "Response complete, starting recording..."
 
         def clear_interface(history):
             cleared_history, cleared_refs, cleared_input = clear_history(context, history)
@@ -122,12 +123,17 @@ def setup_gradio_interface(context):
             handle_user_input,
             inputs=[input_text, session_state],
             outputs=[chat_history, references, input_text, session_state, audio_output, debug_output],
+        ).success(
+            lambda: None,
+            None,
+            audio_input
         )
         
-        clear_button.click(
-            clear_interface,
-            inputs=[session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output, debug_output],
+        # Add audio completion handler to start recording
+        audio_output.stop(
+            lambda: None,
+            None,
+            audio_input
         )
 
         # Add audio input handler with auto-submit
