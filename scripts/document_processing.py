@@ -254,13 +254,12 @@ def load_documents_from_folder(folder_path, chunk_size_max):
                 if not chunks:
                     logging.info(f"No chunks created for file: {os.path.join(os.path.relpath(root, folder_path), filename)}")
                     continue
-                    
-                doc_id = len(documents)  # Use the current number of documents as an ID
 
                 # Get Relative path to the file from the root folder and don't include the file name
                 relative_path = os.path.relpath(root, folder_path)
 
-                documents.extend(create_document_entries(doc_id, filename, relative_path, chunks))
+                # Pass 0 as doc_id since it's no longer used (kept for backward compatibility)
+                documents.extend(create_document_entries(0, filename, relative_path, chunks))
                 logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(chunks)} chunks")
     
     if not documents:
@@ -269,12 +268,26 @@ def load_documents_from_folder(folder_path, chunk_size_max):
     
     return documents
 
+def sanitize_id(id_str):
+    """
+    Sanitize an ID string by replacing spaces with underscores.
+    Keeps '.' and '/' intact for readability and hierarchical structure.
+    
+    Args:
+        id_str (str): The ID string to sanitize
+        
+    Returns:
+        str: Sanitized ID string
+    """
+    # Replace spaces with underscores, keep dots and slashes
+    return id_str.replace(' ', '_')
+
 def create_document_entries(doc_id, filename, filepath, chunks):
     """
     Create document entries with unique IDs for each chunk, including file path.
     
     Args:
-        doc_id (int): The document ID.
+        doc_id (int): The document ID (unused, kept for backward compatibility).
         filename (str): The filename of the document.
         filepath (str): The relative path of the document.
         chunks (list): The chunks of text content and their token counts.
@@ -282,15 +295,20 @@ def create_document_entries(doc_id, filename, filepath, chunks):
     Returns:
         list: List of document dictionaries with chunk ID, document ID, content, filename, filepath, token count, and overlap metadata.
     """
+    # Create document ID by combining filepath and filename
+    full_doc_id = os.path.join(filepath, filename) if filepath != '.' else filename
+    # Sanitize the document ID (only replaces spaces with underscores)
+    safe_doc_id = sanitize_id(full_doc_id)
+    
     return [
         {
-            "id": chunk_idx,
-            "doc_id": doc_id,
+            "id": f"{safe_doc_id}#chunk{chunk_idx}",  # Unique chunk ID that includes the document path
+            "doc_id": safe_doc_id,  # Document ID is the full relative path with spaces replaced
             "content": chunk,
             "filename": filename,
             "filepath": filepath,
-            "chunk_size": chunk_size, # The token count of the chunk
-            "overlap_size": overlap_size # The token count of the overlap
+            "chunk_size": chunk_size,  # The token count of the chunk
+            "overlap_size": overlap_size  # The token count of the overlap
         }
         for chunk_idx, (chunk, chunk_size, overlap_size) in enumerate(chunks)
     ]
