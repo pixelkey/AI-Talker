@@ -5,7 +5,8 @@ from faiss_utils import (
     add_vectors_to_faiss_index,
     save_faiss_index_metadata_and_docstore,
 )
-from config import CHUNK_SIZE_MAX
+from config import CHUNK_SIZE_MAX, FAISS_INDEX_PATH, METADATA_PATH, DOCSTORE_PATH
+from langchain.docstore.document import Document
 
 class VectorStoreClient:
     def __init__(self, vector_store, embeddings, normalize_text):
@@ -16,11 +17,7 @@ class VectorStoreClient:
         
     def _ensure_embedding_paths(self):
         """Ensure all embedding-related directories exist"""
-        for path in [
-            os.environ["FAISS_INDEX_PATH"],
-            os.environ["METADATA_PATH"],
-            os.environ["DOCSTORE_PATH"]
-        ]:
+        for path in [FAISS_INDEX_PATH, METADATA_PATH, DOCSTORE_PATH]:
             abs_path = self._get_absolute_path(path)
             os.makedirs(os.path.dirname(abs_path), exist_ok=True)
             logging.info(f"Ensured directory exists for: {abs_path}")
@@ -36,6 +33,56 @@ class VectorStoreClient:
             return os.path.join(project_root, path)
         return path
         
+    def update_embeddings_from_docstore(self):
+        """Update embeddings from the current docstore state."""
+        try:
+            docstore = self.vector_store.docstore
+            index_to_docstore_id = self.vector_store.index_to_docstore_id
+            
+            # Convert docstore documents to chunks format
+            chunks = []
+            for doc_id, doc in docstore._dict.items():
+                chunk = {
+                    "id": doc_id,
+                    "content": doc.page_content,
+                    "filepath": doc.metadata.get("filepath", ""),
+                    "filename": doc.metadata.get("filename", ""),
+                    "doc_id": doc.metadata.get("doc_id", "")
+                }
+                chunks.append(chunk)
+            
+            if not chunks:
+                logging.info("No documents to update embeddings for")
+                return
+            
+            # Clear the current FAISS index
+            self.vector_store.index.reset()
+            index_to_docstore_id.clear()
+            
+            # Add new embeddings
+            add_vectors_to_faiss_index(
+                chunks,
+                self.vector_store,
+                self.embeddings,
+                self.normalize_text
+            )
+            logging.info(f"Updated embeddings for {len(chunks)} documents")
+            
+            # Save updated index and metadata
+            save_faiss_index_metadata_and_docstore(
+                self.vector_store.index,
+                self.vector_store.index_to_docstore_id,
+                self.vector_store.docstore,
+                self._get_absolute_path(FAISS_INDEX_PATH),
+                self._get_absolute_path(METADATA_PATH),
+                self._get_absolute_path(DOCSTORE_PATH)
+            )
+            logging.info("Saved updated FAISS index and metadata")
+            
+        except Exception as e:
+            logging.error(f"Error updating embeddings from docstore: {str(e)}")
+            raise
+
     def update_from_ingest_path(self, changed_files=None):
         """
         Update embeddings from files in the ingest path.
@@ -89,61 +136,19 @@ class VectorStoreClient:
                 if changed_files:
                     logging.info("No valid chunks found in changed files")
                 return
-                
-            # Remove embeddings for deleted/changed files
+            
+            # Update docstore with new chunks
             docstore = self.vector_store.docstore
-            index_to_docstore_id = self.vector_store.index_to_docstore_id
+            for chunk in chunks:
+                chunk_id = chunk["id"]
+                doc = Document(
+                    page_content=chunk["content"],
+                    metadata=chunk
+                )
+                docstore._dict[chunk_id] = doc
             
-            # Find indices to remove
-            indices_to_remove = []
-            for idx, doc_id in index_to_docstore_id.items():
-                doc = docstore._dict.get(doc_id)
-                if doc:
-                    filepath = os.path.join(
-                        doc.metadata.get("filepath", ""),
-                        doc.metadata.get("filename", "")
-                    )
-                    # Remove if file is deleted or changed, but never remove chat history
-                    if doc.metadata.get("doc_id") != "chat_history" and (
-                        (changed_files is None and filepath not in current_files) or
-                        (changed_files is not None and filepath in changed_relative_paths)
-                    ):
-                        indices_to_remove.append(idx)
-                        del docstore._dict[doc_id]
-                        logging.info(f"Removing document {doc_id} with content: {doc.page_content[:100]}...")
-            
-            # Remove vectors from FAISS index in reverse order
-            if indices_to_remove:
-                # Convert indices to numpy array for FAISS
-                import numpy as np
-                indices_array = np.array(sorted(indices_to_remove, reverse=True), dtype=np.int64)
-                self.vector_store.index.remove_ids(indices_array)
-                
-                # Remove from docstore index
-                for idx in indices_array:
-                    doc_id = index_to_docstore_id[int(idx)]
-                    del index_to_docstore_id[int(idx)]
-                    logging.info(f"Removed index {idx} for document {doc_id}")
-            
-            # Add new embeddings
-            add_vectors_to_faiss_index(
-                chunks,
-                self.vector_store,
-                self.embeddings,
-                self.normalize_text
-            )
-            logging.info(f"Added {len(chunks)} new chunks")
-            
-            # Save updated index and metadata
-            save_faiss_index_metadata_and_docstore(
-                self.vector_store.index,
-                self.vector_store.index_to_docstore_id,
-                self.vector_store.docstore,
-                self._get_absolute_path(os.environ["FAISS_INDEX_PATH"]),
-                self._get_absolute_path(os.environ["METADATA_PATH"]),
-                self._get_absolute_path(os.environ["DOCSTORE_PATH"])
-            )
-            logging.info("Saved updated FAISS index and metadata")
+            # Update embeddings from the new docstore state
+            self.update_embeddings_from_docstore()
             
         except Exception as e:
             logging.error(f"Error updating embeddings: {str(e)}")

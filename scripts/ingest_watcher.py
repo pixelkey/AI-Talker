@@ -52,15 +52,19 @@ class IngestHandler(FileSystemEventHandler):
                 logging.error(f"Error processing changes: {str(e)}")
 
     def on_modified(self, event):
+        logging.info(f"File modified: {event.src_path}")
         self._handle_event(event)
 
     def on_created(self, event):
+        logging.info(f"File created: {event.src_path}")
         self._handle_event(event)
         
     def on_deleted(self, event):
+        logging.info(f"File deleted: {event.src_path}")
         self._handle_event(event)
         
     def on_moved(self, event):
+        logging.info(f"File moved: {event.src_path} -> {event.dest_path}")
         self._handle_event(event)
 
 class IngestWatcher:
@@ -89,9 +93,18 @@ class IngestWatcher:
             return
 
         self.observer = Observer()
+        # Watch main ingest directory
         self.observer.schedule(self.handler, self.watch_path, recursive=True)
+        
+        # Also watch chat history directory
+        chat_history_path = os.path.join(self.watch_path, "chat_history")
+        if not os.path.exists(chat_history_path):
+            os.makedirs(chat_history_path)
+            logging.info(f"Created chat history directory at {chat_history_path}")
+        self.observer.schedule(self.handler, chat_history_path, recursive=True)
+        
         self.observer.start()
-        logging.info(f"Started watching directory: {self.watch_path}")
+        logging.info(f"Started watching directories: {self.watch_path}, {chat_history_path}")
 
     def stop(self):
         """Stop watching the ingest directory"""

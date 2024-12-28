@@ -193,11 +193,6 @@ def load_json_content(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # Skip empty arrays or objects
-            if not data:  # This will catch empty lists, dicts, and other "falsy" values
-                logging.info(f"Skipping empty JSON file: {file_path}")
-                return ""
-            # Pretty print the JSON with indentation for better readability
             return json.dumps(data, indent=2)
     except json.JSONDecodeError as e:
         logging.error(f"Error decoding JSON file {file_path}: {str(e)}")
@@ -220,7 +215,7 @@ def load_single_document(file_path, chunk_size_max):
     file_ext = os.path.splitext(file_path)[1].lower()
     SUPPORTED_EXTENSIONS = {
         ".txt": "text",
-        ".json": "json",
+        ".json": "text",
         ".md": "text",
         ".py": "text",
         ".js": "text",
@@ -267,7 +262,7 @@ def load_documents_from_folder(folder_path, chunk_size_max):
     """
     SUPPORTED_EXTENSIONS = {
         ".txt": "text",
-        ".json": "json",
+        ".json": "text",
         ".md": "text",
         ".py": "text",
         ".js": "text",
