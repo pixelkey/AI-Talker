@@ -28,8 +28,12 @@ class VectorStoreClient:
     def _get_absolute_path(self, path):
         """Convert relative path to absolute path"""
         if not os.path.isabs(path):
-            script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            return os.path.abspath(os.path.join(script_dir, path))
+            # Get the project root directory (where scripts/ folder is)
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # If path starts with ../, remove it since we're already at project root
+            if path.startswith("../"):
+                path = path[3:]
+            return os.path.join(project_root, path)
         return path
         
     def update_from_ingest_path(self, changed_files=None):

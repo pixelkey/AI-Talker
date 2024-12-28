@@ -10,10 +10,10 @@ env_config = {
     "OPENAI_API_KEY": {"default": "your-api-key-here", "type": str},
     "EMBEDDING_MODEL": {"default": "nomic-embed-text:latest", "type": str},
     "EMBEDDING_DIM": {"default": "768", "type": int},
-    "FAISS_INDEX_PATH": {"default": "embeddings/faiss_index.bin", "type": str},
-    "METADATA_PATH": {"default": "embeddings/metadata.pkl", "type": str},
-    "DOCSTORE_PATH": {"default": "embeddings/docstore.pkl", "type": str},
-    "INGEST_PATH": {"default": "ingest", "type": str},
+    "FAISS_INDEX_PATH": {"default": "../embeddings/faiss_index.bin", "type": str},
+    "METADATA_PATH": {"default": "../embeddings/metadata.pkl", "type": str},
+    "DOCSTORE_PATH": {"default": "../embeddings/docstore.pkl", "type": str},
+    "INGEST_PATH": {"default": "../ingest", "type": str},
     "SYSTEM_PROMPT": {
         "default": (
             "You are a person with a positive, thoughtful, and happy personality."
