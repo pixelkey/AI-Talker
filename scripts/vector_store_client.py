@@ -7,6 +7,7 @@ from faiss_utils import (
 )
 from config import CHUNK_SIZE_MAX, FAISS_INDEX_PATH, METADATA_PATH, DOCSTORE_PATH
 from langchain.docstore.document import Document
+import numpy as np
 
 class VectorStoreClient:
     def __init__(self, vector_store, embeddings, normalize_text):
@@ -33,7 +34,7 @@ class VectorStoreClient:
             return os.path.join(project_root, path)
         return path
         
-    def update_embeddings_from_docstore(self):
+    def update_embeddings_from_docstore(self, changed_chunks=None):
         """Update embeddings from the current docstore state."""
         try:
             docstore = self.vector_store.docstore
@@ -41,23 +42,47 @@ class VectorStoreClient:
             
             # Convert docstore documents to chunks format
             chunks = []
-            for doc_id, doc in docstore._dict.items():
-                chunk = {
-                    "id": doc_id,
-                    "content": doc.page_content,
-                    "filepath": doc.metadata.get("filepath", ""),
-                    "filename": doc.metadata.get("filename", ""),
-                    "doc_id": doc.metadata.get("doc_id", "")
-                }
-                chunks.append(chunk)
+            if changed_chunks:
+                # Only process changed chunks
+                for chunk_id in changed_chunks:
+                    if chunk_id in docstore._dict:
+                        doc = docstore._dict[chunk_id]
+                        chunk = {
+                            "id": chunk_id,
+                            "content": doc.page_content,
+                            "filepath": doc.metadata.get("filepath", ""),
+                            "filename": doc.metadata.get("filename", ""),
+                            "doc_id": doc.metadata.get("doc_id", "")
+                        }
+                        chunks.append(chunk)
+            else:
+                # Process all chunks (initial load)
+                for doc_id, doc in docstore._dict.items():
+                    chunk = {
+                        "id": doc_id,
+                        "content": doc.page_content,
+                        "filepath": doc.metadata.get("filepath", ""),
+                        "filename": doc.metadata.get("filename", ""),
+                        "doc_id": doc.metadata.get("doc_id", "")
+                    }
+                    chunks.append(chunk)
             
             if not chunks:
                 logging.info("No documents to update embeddings for")
                 return
             
-            # Clear the current FAISS index
-            self.vector_store.index.reset()
-            index_to_docstore_id.clear()
+            if not changed_chunks:
+                # Full reload - clear the index
+                self.vector_store.index.reset()
+                index_to_docstore_id.clear()
+            else:
+                # Remove old entries for changed chunks
+                for chunk_id in changed_chunks:
+                    if chunk_id in index_to_docstore_id:
+                        idx = list(index_to_docstore_id.values()).index(chunk_id)
+                        # Mark the vector as deleted in FAISS
+                        self.vector_store.index.remove_ids(np.array([idx]))
+                        del index_to_docstore_id[idx]
             
             # Add new embeddings
             add_vectors_to_faiss_index(
@@ -66,7 +91,7 @@ class VectorStoreClient:
                 self.embeddings,
                 self.normalize_text
             )
-            logging.info(f"Updated embeddings for {len(chunks)} documents")
+            logging.info(f"Updated embeddings for {len(chunks)} chunks")
             
             # Save updated index and metadata
             save_faiss_index_metadata_and_docstore(
@@ -77,7 +102,6 @@ class VectorStoreClient:
                 self._get_absolute_path(METADATA_PATH),
                 self._get_absolute_path(DOCSTORE_PATH)
             )
-            logging.info("Saved updated FAISS index and metadata")
             
         except Exception as e:
             logging.error(f"Error updating embeddings from docstore: {str(e)}")
@@ -109,7 +133,7 @@ class VectorStoreClient:
                 }
             else:
                 # Only process changed files
-                logging.info(f"Processing {len(changed_files)} changed files: {changed_files}")
+                logging.info(f"Processing changed files: {changed_files}")
                 chunks = []
                 # Get relative paths of changed files
                 changed_relative_paths = set()
@@ -128,7 +152,6 @@ class VectorStoreClient:
                     if file_chunks:
                         new_chunks = create_document_entries(0, filename, relative_path, file_chunks)
                         chunks.extend(new_chunks)
-                        logging.info(f"Loaded and chunked document {relative_file_path} into {len(file_chunks)} chunks with content: {file_chunks[0][:100]}...")
                     else:
                         logging.warning(f"No chunks created for file: {file_path}")
             
@@ -137,18 +160,22 @@ class VectorStoreClient:
                     logging.info("No valid chunks found in changed files")
                 return
             
+            # Track which chunks are being updated
+            changed_chunk_ids = set()
+            
             # Update docstore with new chunks
             docstore = self.vector_store.docstore
             for chunk in chunks:
                 chunk_id = chunk["id"]
+                changed_chunk_ids.add(chunk_id)
                 doc = Document(
                     page_content=chunk["content"],
                     metadata=chunk
                 )
                 docstore._dict[chunk_id] = doc
             
-            # Update embeddings from the new docstore state
-            self.update_embeddings_from_docstore()
+            # Update embeddings only for changed chunks
+            self.update_embeddings_from_docstore(changed_chunk_ids)
             
         except Exception as e:
             logging.error(f"Error updating embeddings: {str(e)}")

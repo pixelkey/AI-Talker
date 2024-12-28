@@ -24,42 +24,29 @@ def save_faiss_index_metadata_and_docstore(
         temp_metadata = metadata_path + ".tmp"
         temp_docstore = docstore_path + ".tmp"
         
-        logging.info(f"Saving to temporary files...")
-        
         # Save FAISS index
         faiss.write_index(faiss_index, temp_faiss)
-        logging.info(f"Saved FAISS index to temporary file: {os.path.abspath(temp_faiss)}")
         
         # Save metadata
         with open(temp_metadata, "wb") as f:
             pickle.dump(metadata, f)
-        logging.info(f"Saved metadata to temporary file: {os.path.abspath(temp_metadata)}")
         
         # Save docstore
         with open(temp_docstore, "wb") as f:
             pickle.dump(docstore._dict, f)
-        logging.info(f"Saved docstore to temporary file: {os.path.abspath(temp_docstore)}")
-        
-        logging.info(f"Moving temporary files to final locations...")
         
         # Atomically rename temporary files to final names
         os.rename(temp_faiss, faiss_index_path)
-        logging.info(f"Moved {os.path.basename(temp_faiss)} to {os.path.basename(faiss_index_path)}")
-        
         os.rename(temp_metadata, metadata_path)
-        logging.info(f"Moved {os.path.basename(temp_metadata)} to {os.path.basename(metadata_path)}")
-        
         os.rename(temp_docstore, docstore_path)
-        logging.info(f"Moved {os.path.basename(temp_docstore)} to {os.path.basename(docstore_path)}")
         
-        logging.info(f"Successfully saved all files atomically to {os.path.dirname(faiss_index_path)}")
+        logging.info("Successfully saved all files")
     except Exception as e:
         # Clean up temporary files if they exist
         for temp_file in [temp_faiss, temp_metadata, temp_docstore]:
             try:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
-                    logging.info(f"Cleaned up temporary file: {temp_file}")
             except Exception as cleanup_error:
                 logging.error(f"Error cleaning up temporary file {temp_file}: {str(cleanup_error)}")
         logging.error(f"Error saving FAISS data: {str(e)}")
