@@ -127,7 +127,7 @@ def add_vectors_to_faiss_index(chunks, vector_store, embeddings, normalize_text)
             )
             docstore._dict[chunk_id] = chunk
             index_to_docstore_id[start_idx + idx] = chunk_id
-            logging.info(f"Added chunk {chunk_id} to vector store with normalized content: {normalized_doc[:100]}...")
+            logging.debug(f"Added chunk {chunk_id} to vector store")
         except Exception as e:
             logging.error(f"Error adding chunk {doc['id']} to vector store: {str(e)}")
             raise
