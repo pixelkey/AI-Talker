@@ -11,8 +11,6 @@ from typing import Optional, Callable
 class IngestHandler(FileSystemEventHandler):
     def __init__(self, on_change_callback: Callable):
         self.on_change_callback = on_change_callback
-        self._last_processed_time = time.time()
-        self._debounce_delay = 1.0  # Delay in seconds to debounce multiple events
         self._lock = threading.Lock()
         self._pending_changes = set()  # Track pending file changes
 
@@ -32,27 +30,26 @@ class IngestHandler(FileSystemEventHandler):
         return True
 
     def _handle_event(self, event):
-        """Handle file system event with debouncing"""
+        """Handle file system event"""
         if not self._should_process_event(event):
             return
             
-        current_time = time.time()
         with self._lock:
             # Add the changed file to pending changes
             if not event.is_directory:
                 self._pending_changes.add(event.src_path)
                 logging.info(f"Added {event.src_path} to pending changes")
             
-            if current_time - self._last_processed_time >= self._debounce_delay:
-                self._last_processed_time = current_time
-                # Process all pending changes
+            try:
                 if self._pending_changes:
                     logging.info(f"Processing {len(self._pending_changes)} changed files: {list(self._pending_changes)}")
                     self.on_change_callback(list(self._pending_changes))
-                    self._pending_changes.clear()
                 else:
                     # Directory event - process all files
                     self.on_change_callback(None)
+                self._pending_changes.clear()
+            except Exception as e:
+                logging.error(f"Error processing changes: {str(e)}")
 
     def on_modified(self, event):
         self._handle_event(event)

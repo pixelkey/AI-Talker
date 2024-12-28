@@ -45,8 +45,11 @@ class VectorStoreClient:
                 If None, updates all files (used for initial load).
         """
         try:
-            # Get absolute ingest path
-            ingest_path = self._get_absolute_path(os.environ["INGEST_PATH"])
+            # Get absolute ingest path relative to project root
+            ingest_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "ingest"
+            )
             
             if changed_files is None:
                 # Initial load - process all files
