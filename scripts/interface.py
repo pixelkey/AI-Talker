@@ -105,8 +105,11 @@ def setup_gradio_interface(context):
                 )
 
                 # Set a fixed random seed for consistent voice
-                torch.manual_seed(0)
-                torch.cuda.manual_seed(0)
+                torch.manual_seed(42)  # Use a constant seed
+                torch.cuda.manual_seed(42)
+                
+                # Use a specific voice preset for consistency
+                voice_samples, conditioning_latents = load_voice('train_dotrice', extra_voice_dirs=[])
                 
                 # Split long text into smaller chunks at sentence boundaries
                 sentences = text.split('.')
@@ -132,7 +135,8 @@ def setup_gradio_interface(context):
                         
                     gen = tts.tts_with_preset(
                         chunk,
-                        voice_samples=None,
+                        voice_samples=voice_samples,
+                        conditioning_latents=conditioning_latents,
                         preset='ultra_fast',
                         use_deterministic_seed=True,
                         num_autoregressive_samples=1,
