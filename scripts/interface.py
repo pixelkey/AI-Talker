@@ -21,6 +21,49 @@ from langchain.docstore.document import Document
 from vector_store_client import VectorStoreClient
 from document_processing import normalize_text
 import ollama
+import time
+
+def initialize_tts():
+    """Initialize TTS and return the initialized objects"""
+    print("\n=== Initializing TTS at startup ===")
+    try:
+        # Initialize TTS with optimal configuration
+        tts_config = {
+            "kv_cache": True,
+            "half": True,
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "autoregressive_batch_size": 1,
+            "use_deepspeed": True
+        }
+        print(f"Initializing TTS with config: {tts_config}")
+        tts = TextToSpeech(**tts_config)
+        print("TTS object created successfully")
+
+        # Set fixed seed for consistent voice
+        torch.manual_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(42)
+        
+        print("Loading voice samples...")
+        # Load voice samples and get conditioning latents
+        voice_samples = load_voice('train_dotrice', extra_voice_dirs=[])[0]  # Just get the samples
+        print(f"Voice samples loaded: {len(voice_samples)} samples")
+        
+        print("Computing conditioning latents...")
+        # Generate latents from samples
+        gen_conditioning_latents = tts.get_conditioning_latents(voice_samples)
+        print("Conditioning latents generated")
+        
+        return {
+            'tts': tts,
+            'voice_samples': voice_samples,
+            'conditioning_latents': gen_conditioning_latents
+        }
+    except Exception as e:
+        print(f"Error initializing TTS: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 # Set CUDA_HOME if not set
 if not os.environ.get('CUDA_HOME'):
@@ -58,6 +101,24 @@ def setup_gradio_interface(context):
     Returns:
         gr.Blocks: Gradio interface object.
     """
+    print("\n=== Setting up Gradio interface ===")
+    
+    # Initialize TTS at startup
+    tts_context = initialize_tts()
+    if not tts_context:
+        print("Failed to initialize TTS")
+        return None
+        
+    # Store TTS objects in context
+    context.update(tts_context)
+    print("TTS objects stored in context")
+    
+    # Verify context contents
+    print(f"Context contents after initialization:")
+    print(f"- TTS object: {type(context.get('tts'))}")
+    print(f"- Voice samples: {type(context.get('voice_samples'))}, length: {len(context.get('voice_samples'))}")
+    print(f"- Conditioning latents: {type(context.get('conditioning_latents'))}")
+
     # Initialize state
     state = {"last_processed_index": 0}
 
@@ -154,62 +215,30 @@ def setup_gradio_interface(context):
         session_state = gr.State(value=[])
 
         def text_to_speech(text):
-            """Convert text to speech using Tortoise TTS with DeepSpeed optimization if available"""
+            """Convert text to speech using Tortoise TTS"""
             print("\n=== Starting text_to_speech ===")
+            
             if not text:
                 print("No text provided, returning None")
                 return None
+
+            # Get TTS instance from context
+            tts = context.get('tts')
+            voice_samples = context.get('voice_samples')
+            conditioning_latents = context.get('conditioning_latents')
+            
+            print(f"\nRetrieved from context:")
+            print(f"- TTS object: {type(tts) if tts else None}")
+            print(f"- Voice samples: {type(voice_samples) if voice_samples else None}, length: {len(voice_samples) if voice_samples else 0}")
+            print(f"- Conditioning latents: {type(conditioning_latents) if conditioning_latents else None}")
+            
+            if not tts or not voice_samples or not conditioning_latents:
+                print("TTS not properly initialized")
+                return None
+            
             try:
-                print("Checking DeepSpeed availability...")
-                # Check for CUDA and DeepSpeed availability
-                use_deepspeed = False
-                try:
-                    import deepspeed
-                    import os
-                    print(f"CUDA available: {torch.cuda.is_available()}")
-                    print(f"CUDA_HOME: {os.environ.get('CUDA_HOME', 'Not set')}")
-                    if torch.cuda.is_available():
-                        print(f"CUDA device: {torch.cuda.get_device_name(0)}")
-                    
-                    if torch.cuda.is_available() and os.environ.get('CUDA_HOME'):
-                        use_deepspeed = True
-                        print("DeepSpeed optimization enabled")
-                        print(f"DeepSpeed version: {deepspeed.__version__}")
-                    else:
-                        print("CUDA or CUDA_HOME not available, falling back to standard mode")
-                except ImportError as e:
-                    print(f"DeepSpeed import error: {str(e)}")
-                    print("DeepSpeed not available, falling back to standard mode")
-                except Exception as e:
-                    print(f"Error checking DeepSpeed availability: {str(e)}")
-                    print("Falling back to standard mode")
-
-                print("Initializing TTS configuration...")
-                # Initialize Tortoise TTS with basic configuration
-                tts_config = {
-                    "kv_cache": True,
-                    "half": True,
-                    "device": "cuda" if torch.cuda.is_available() else "cpu",
-                    "autoregressive_batch_size": 1,
-                    "use_deepspeed": use_deepspeed  # Only pass the flag, not the full config
-                }
-
-                print(f"Initializing TTS with config: {tts_config}")
-                tts = TextToSpeech(**tts_config)
-                print("TTS initialized successfully")
-
-                # Set a fixed random seed for consistent voice
-                torch.manual_seed(42)
-                if torch.cuda.is_available():
-                    torch.cuda.manual_seed(42)
-                
-                print("Loading voice samples...")
-                # Use a specific voice preset for consistency
-                voice_samples, conditioning_latents = load_voice('train_dotrice', extra_voice_dirs=[])
-                print("Voice samples loaded")
-                
-                # Split long text into smaller chunks at sentence boundaries
                 print("Processing text chunks...")
+                # Split long text into smaller chunks at sentence boundaries
                 sentences = text.split('.')
                 max_chunk_length = 100  # Maximum characters per chunk
                 chunks = []
@@ -220,46 +249,68 @@ def setup_gradio_interface(context):
                         current_chunk += sentence + "."
                     else:
                         if current_chunk:
-                            chunks.append(current_chunk)
+                            chunks.append(current_chunk.strip())
                         current_chunk = sentence + "."
                 if current_chunk:
-                    chunks.append(current_chunk)
-
-                print(f"Created {len(chunks)} chunks")
-
-                # Process each chunk with minimal settings and DeepSpeed optimization if enabled
+                    chunks.append(current_chunk.strip())
+                
+                print(f"Created {len(chunks)} chunks: {chunks}")
+                
+                # Process each chunk
                 all_audio = []
                 for i, chunk in enumerate(chunks, 1):
-                    print(f"Processing chunk {i}/{len(chunks)}")
+                    print(f"\nProcessing chunk {i}/{len(chunks)}: '{chunk}'")
                     if not chunk.strip():
                         print(f"Skipping empty chunk {i}")
                         continue
-                        
-                    gen = tts.tts_with_preset(
-                        chunk,
-                        voice_samples=voice_samples,
-                        conditioning_latents=conditioning_latents,
-                        preset='ultra_fast',
-                        use_deterministic_seed=True,
-                        num_autoregressive_samples=1,
-                        diffusion_iterations=10,
-                        cond_free=False,
-                        temperature=0.8
-                    )
-                    print(f"Generated audio for chunk {i}")
+                    
+                    print("Generating autoregressive samples...")
+                    try:
+                        gen = tts.tts_with_preset(
+                            chunk,
+                            voice_samples=voice_samples,
+                            conditioning_latents=conditioning_latents,
+                            preset='ultra_fast',
+                            use_deterministic_seed=True,
+                            num_autoregressive_samples=1,
+                            diffusion_iterations=10,
+                            cond_free=False,
+                            temperature=0.8
+                        )
+                        print(f"Generated audio for chunk {i}")
+                    except RuntimeError as e:
+                        print(f"Error generating audio for chunk {i}: {e}")
+                        if "expected a non-empty list of Tensors" in str(e):
+                            print("Retrying with different configuration...")
+                            # Try again with modified settings
+                            gen = tts.tts_with_preset(
+                                chunk,
+                                voice_samples=voice_samples,
+                                conditioning_latents=conditioning_latents,
+                                preset='ultra_fast',
+                                use_deterministic_seed=True,
+                                num_autoregressive_samples=2,
+                                diffusion_iterations=10,
+                                cond_free=False,
+                                temperature=0.8
+                            )
+                            print("Retry successful")
+                        else:
+                            raise
                     
                     if isinstance(gen, tuple):
                         gen = gen[0]
                     if len(gen.shape) == 3:
                         gen = gen.squeeze(0)
                     
+                    print(f"Audio shape for chunk {i}: {gen.shape}")
                     all_audio.append(gen)
 
                 # Combine all audio chunks
-                print("Combining audio chunks...")
+                print("\nCombining audio chunks...")
                 if all_audio:
                     combined_audio = torch.cat(all_audio, dim=1)
-                    print("Audio chunks combined successfully")
+                    print(f"Audio chunks combined successfully, final shape: {combined_audio.shape}")
                 else:
                     print("No audio generated")
                     return None
@@ -272,6 +323,7 @@ def setup_gradio_interface(context):
                     print(f"Audio saved to {temp_path}")
                     
                 return temp_path
+
             except Exception as e:
                 print(f"Error in text-to-speech: {str(e)}")
                 import traceback
