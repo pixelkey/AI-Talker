@@ -1,12 +1,13 @@
 # scripts/faiss_utils.py
 
-import faiss
-import pickle
 import os
-import logging
+import pickle
+import faiss
 import numpy as np
-from langchain.vectorstores import FAISS
-from langchain.docstore import InMemoryDocstore
+from typing import Dict, List, Any
+import logging
+from langchain_community.vectorstores import FAISS
+from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain.docstore.document import Document
 import config
 
