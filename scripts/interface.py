@@ -9,7 +9,9 @@ import speech_recognition as sr
 import numpy as np
 import io
 import soundfile as sf
-from gtts import gTTS
+import torchaudio
+from tortoise.api import TextToSpeech
+from tortoise.utils.audio import load_audio, load_voice, load_voices
 import tempfile
 import os
 import logging
@@ -89,18 +91,24 @@ def setup_gradio_interface(context):
         session_state = gr.State(value=[])
 
         def text_to_speech(text):
-            """Convert text to speech using gTTS"""
+            """Convert text to speech using Tortoise TTS"""
             if not text:
                 return None
             try:
+                # Initialize Tortoise TTS
+                tts = TextToSpeech()
+                
+                # Generate speech with default voice
+                # Using 'ultra_fast' preset for quicker generation
+                gen = tts.tts(text, voice_samples=None, preset='ultra_fast')
+                
                 # Create a temporary file
-                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as fp:
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
                     temp_path = fp.name
-                
-                # Generate speech
-                tts = gTTS(text=text, lang='en')
-                tts.save(temp_path)
-                
+                    
+                    # Save the generated audio
+                    torchaudio.save(temp_path, gen.squeeze(0).cpu(), 24000)
+                    
                 return temp_path
             except Exception as e:
                 print(f"Error in text-to-speech: {str(e)}")
