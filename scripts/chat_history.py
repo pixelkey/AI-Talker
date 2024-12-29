@@ -30,8 +30,8 @@ class ChatHistoryManager:
                 # Only save pairs where both messages exist
                 if user_msg and assistant_msg:
                     formatted_pair = {
-                        "user": f"user: {user_msg}",
-                        "assistant": f"assistant: {assistant_msg}"
+                        "user": user_msg,
+                        "assistant": assistant_msg
                     }
                     formatted_history.append(formatted_pair)
             
