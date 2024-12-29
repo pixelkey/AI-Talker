@@ -148,65 +148,60 @@ def setup_gradio_interface(context):
             history.append((input_text, None))
             # Save history to file
             chat_manager.save_history(history)
+            
             yield history, refs, "", history, None, ""
 
-            # Generate the LLM response if references were found
-            if filtered_docs:
-                _, response, _ = chatbot_response(input_text, context_documents, context, history)
-                # Add assistant response to history
-                history[-1] = (input_text, response)
-                # Save updated history
-                chat_manager.save_history(history)
+            # Generate the LLM response
+            _, response, _ = chatbot_response(input_text, context_documents, context, history)
+            # Add assistant response to history
+            history[-1] = (input_text, response)
+            # Save updated history
+            chat_manager.save_history(history)
+            
+            # Generate speech for the response first
+            audio_path = text_to_speech(response)
+            yield history, refs, "", history, audio_path, "Response complete, starting recording..."
+            
+            # Update embeddings after response and audio are complete
+            new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
+            if new_messages:
+                chat_text = chat_manager.format_for_embedding(new_messages)
+                # Add chat history to vector store directly
+                vector_store = context['vector_store']
+                vectors = context['embeddings'].embed_documents([chat_text])
+                vectors = np.array(vectors, dtype="float32")
+                faiss.normalize_L2(vectors)
+                vector_store.index.add(vectors)
                 
-                # Generate speech for the response first
-                audio_path = text_to_speech(response)
-                yield history, refs, "", history, audio_path, "Response complete, starting recording..."
+                # Add to docstore
+                chunk_id = str(len(vector_store.index_to_docstore_id))
+                chunk = Document(
+                    page_content=chat_text,
+                    metadata={
+                        "id": chunk_id,
+                        "doc_id": "chat_history",
+                        "filename": os.path.basename(chat_manager.current_file),
+                        "filepath": "chat_history",
+                        "chunk_size": len(chat_text),
+                        "overlap_size": 0,
+                    },
+                )
+                vector_store.docstore._dict[chunk_id] = chunk
+                vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
                 
-                # Update embeddings after response and audio are complete
-                new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
-                if new_messages:
-                    chat_text = chat_manager.format_for_embedding(new_messages)
-                    # Add chat history to vector store directly
-                    vector_store = context['vector_store']
-                    vectors = context['embeddings'].embed_documents([chat_text])
-                    vectors = np.array(vectors, dtype="float32")
-                    faiss.normalize_L2(vectors)
-                    vector_store.index.add(vectors)
-                    
-                    # Add to docstore
-                    chunk_id = str(len(vector_store.index_to_docstore_id))
-                    chunk = Document(
-                        page_content=chat_text,
-                        metadata={
-                            "id": chunk_id,
-                            "doc_id": "chat_history",
-                            "filename": os.path.basename(chat_manager.current_file),
-                            "filepath": "chat_history",
-                            "chunk_size": len(chat_text),
-                            "overlap_size": 0,
-                        },
-                    )
-                    vector_store.docstore._dict[chunk_id] = chunk
-                    vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
-                    
-                    state["last_processed_index"] = new_last_index
-                    
-                    # Save the updated index
-                    save_faiss_index_metadata_and_docstore(
-                        vector_store.index,
-                        vector_store.index_to_docstore_id,
-                        vector_store.docstore,
-                        os.environ["FAISS_INDEX_PATH"],
-                        os.environ["METADATA_PATH"],
-                        os.environ["DOCSTORE_PATH"]
-                    )
-                    logging.info("Updated embeddings with new chat history")
-            else:
-                response = "I don't have any relevant information to help with that query."
-                history[-1] = (input_text, response)
-                chat_manager.save_history(history)
-                audio_path = text_to_speech(response)
-                yield history, refs, "", history, audio_path, "Response complete, starting recording..."
+                state["last_processed_index"] = new_last_index
+                
+                # Save the updated index
+                save_faiss_index_metadata_and_docstore(
+                    vector_store.index,
+                    vector_store.index_to_docstore_id,
+                    vector_store.docstore,
+                    os.environ["FAISS_INDEX_PATH"],
+                    os.environ["METADATA_PATH"],
+                    os.environ["DOCSTORE_PATH"]
+                )
+                logging.info("Updated embeddings with new chat history")
+
 
         def clear_interface(history):
             cleared_history, cleared_refs, cleared_input = clear_history(context, history)
