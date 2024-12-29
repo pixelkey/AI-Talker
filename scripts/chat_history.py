@@ -25,14 +25,30 @@ class ChatHistoryManager:
     def save_history(self, history):
         """Save chat history to the current file only if there are messages"""
         if history:  # Only save if there are messages
+            formatted_history = []
+            for user_msg, assistant_msg in history:
+                # Only save pairs where both messages exist
+                if user_msg and assistant_msg:
+                    formatted_pair = {
+                        "user": f"user: {user_msg}",
+                        "assistant": f"assistant: {assistant_msg}"
+                    }
+                    formatted_history.append(formatted_pair)
+            
             with open(self.current_file, 'w', encoding='utf-8') as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+                json.dump(formatted_history, f, ensure_ascii=False, indent=2)
 
     def load_history(self):
         """Load chat history from the current file"""
         if os.path.exists(self.current_file):
             with open(self.current_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                formatted_history = json.load(f)
+                history = []
+                for msg_pair in formatted_history:
+                    user_msg = msg_pair["user"].replace("user: ", "", 1) if msg_pair["user"] else ""
+                    assistant_msg = msg_pair["assistant"].replace("assistant: ", "", 1) if msg_pair["assistant"] else ""
+                    history.append((user_msg, assistant_msg))
+                return history
         return []
 
     def get_new_messages(self, last_processed_index=0):
