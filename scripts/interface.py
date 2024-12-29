@@ -73,23 +73,57 @@ def setup_gradio_interface(context):
     if context.get('MODEL_SOURCE') == 'local':
         context['client'] = ollama
 
-    # Initialize and start the ingest watcher
     def update_embeddings(changed_files=None):
         """Callback function to update embeddings when files change"""
         try:
-            context['vector_store_client'].update_from_ingest_path(changed_files)
             if changed_files:
+                logging.info(f"Processing changed files: {changed_files}")
+                for file_path in changed_files:
+                    if os.path.exists(file_path):
+                        # Load and chunk the changed file
+                        documents = context['loader'].load_documents([file_path])
+                        if documents:
+                            chunks = context['chunker'].split_documents(documents)
+                            # Update vector store with new chunks
+                            context['vector_store'].add_documents(chunks)
+                            logging.info(f"Updated embeddings for {len(chunks)} chunks")
+                            
+                # Save updated index and metadata
+                save_faiss_index_metadata_and_docstore(
+                    context['vector_store'].index,
+                    context['vector_store'].index_to_docstore_id,
+                    context['vector_store'].docstore,
+                    os.environ["FAISS_INDEX_PATH"],
+                    os.environ["METADATA_PATH"],
+                    os.environ["DOCSTORE_PATH"]
+                )
                 logging.info(f"Updated embeddings for {len(changed_files)} files")
             else:
-                logging.info("Updated embeddings from ingest directory")
+                # Load all documents from ingest directory
+                logging.info("Loading all documents from /home/andrew/projects/app/python/talker/ingest")
+                documents = context['loader'].load()
+                if documents:
+                    chunks = context['chunker'].split_documents(documents)
+                    # Update vector store with all chunks
+                    context['vector_store'].add_documents(chunks)
+                    logging.info(f"Updated embeddings for {len(chunks)} chunks")
+                    # Save updated index and metadata
+                    save_faiss_index_metadata_and_docstore(
+                        context['vector_store'].index,
+                        context['vector_store'].index_to_docstore_id,
+                        context['vector_store'].docstore,
+                        os.environ["FAISS_INDEX_PATH"],
+                        os.environ["METADATA_PATH"],
+                        os.environ["DOCSTORE_PATH"]
+                    )
+                    logging.info("Updated embeddings from ingest directory")
             
         except Exception as e:
             logging.error(f"Error updating embeddings: {str(e)}")
-            
-    # Create and start the watcher
+
+    # Create the watcher but don't start it yet - we'll manually trigger updates
     watcher = IngestWatcher(update_embeddings)
-    watcher.start()
-    context['watcher'] = watcher  # Store in context to stop later if needed
+    context['watcher'] = watcher
 
     with gr.Blocks(css=".separator { margin: 8px 0; border-bottom: 1px solid #ddd; }") as app:
         # Output fields
@@ -276,6 +310,7 @@ def setup_gradio_interface(context):
             if not input_text.strip():
                 return history, "", "", history, None, ""
 
+            # Get references and generate response
             refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
             
             # Initialize history if needed
@@ -284,34 +319,36 @@ def setup_gradio_interface(context):
             
             # Add user message to history
             history.append((input_text, None))
-            # Save history to file
-            chat_manager.save_history(history)
             
+            # First yield to update UI with user message
             yield history, refs, "", history, None, ""
 
             # Generate the LLM response
             _, response, _ = chatbot_response(input_text, context_documents, context, history)
-            # Add assistant response to history
+            
+            # Add assistant response to history and save
             history[-1] = (input_text, response)
-            # Save updated history
             chat_manager.save_history(history)
             
-            # Generate speech for the response first
+            # Generate speech for the response
+            print("\nGenerating TTS response...")
             audio_path = text_to_speech(response)
-            yield history, refs, "", history, audio_path, "Response complete, starting recording..."
+            print("TTS generation complete")
             
-            # Update embeddings after response and audio are complete
+            # Yield the response with audio
+            yield history, refs, "", history, audio_path, "Response complete, updating embeddings..."
+            
+            print("\nUpdating embeddings...")
+            # Update embeddings after TTS is complete
             new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
             if new_messages:
                 chat_text = chat_manager.format_for_embedding(new_messages)
-                # Add chat history to vector store directly
                 vector_store = context['vector_store']
                 vectors = context['embeddings'].embed_documents([chat_text])
                 vectors = np.array(vectors, dtype="float32")
                 faiss.normalize_L2(vectors)
                 vector_store.index.add(vectors)
                 
-                # Add to docstore
                 chunk_id = str(len(vector_store.index_to_docstore_id))
                 chunk = Document(
                     page_content=chat_text,
@@ -326,7 +363,6 @@ def setup_gradio_interface(context):
                 )
                 vector_store.docstore._dict[chunk_id] = chunk
                 vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
-                
                 state["last_processed_index"] = new_last_index
                 
                 # Save the updated index
@@ -338,8 +374,16 @@ def setup_gradio_interface(context):
                     os.environ["METADATA_PATH"],
                     os.environ["DOCSTORE_PATH"]
                 )
-                logging.info("Updated embeddings with new chat history")
-
+                print("Embeddings update complete")
+                
+                # Now process any pending file changes
+                if hasattr(context['watcher'], 'pending_changes') and context['watcher'].pending_changes:
+                    pending = context['watcher'].pending_changes.copy()
+                    context['watcher'].pending_changes.clear()
+                    update_embeddings(pending)
+            
+            # Final yield after everything is complete
+            yield history, refs, "", history, audio_path, "Processing complete"
 
         def clear_interface(history):
             cleared_history, cleared_refs, cleared_input = clear_history(context, history)
