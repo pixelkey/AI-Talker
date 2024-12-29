@@ -139,9 +139,14 @@ class VectorStoreClient:
                 chunks = []
                 # Get relative paths of changed files
                 changed_relative_paths = set()
+                deleted_files = []
                 for file_path in changed_files:
                     if not os.path.exists(file_path):
-                        logging.warning(f"File no longer exists: {file_path}")
+                        # File was deleted
+                        logging.info(f"File was deleted: {file_path}")
+                        relative_path = os.path.relpath(os.path.dirname(file_path), ingest_path)
+                        filename = os.path.basename(file_path)
+                        deleted_files.append((relative_path, filename))
                         continue
                     # Get relative paths for the file
                     relative_path = os.path.relpath(os.path.dirname(file_path), ingest_path)
@@ -157,27 +162,65 @@ class VectorStoreClient:
                     else:
                         logging.warning(f"No chunks created for file: {file_path}")
             
-            if not chunks:
+                # Handle deleted files
+                if deleted_files:
+                    docstore = self.vector_store.docstore
+                    index_to_docstore_id = self.vector_store.index_to_docstore_id
+                    chunks_to_delete = set()
+                    
+                    # Find all chunks belonging to deleted files
+                    for doc_id, doc in list(docstore._dict.items()):
+                        filepath = doc.metadata.get("filepath", "")
+                        filename = doc.metadata.get("filename", "")
+                        for del_path, del_file in deleted_files:
+                            if filepath == del_path and filename == del_file:
+                                chunks_to_delete.add(doc_id)
+                                del docstore._dict[doc_id]
+                    
+                    # Remove deleted chunks from the index
+                    if chunks_to_delete:
+                        indices_to_delete = []
+                        for idx, chunk_id in list(index_to_docstore_id.items()):
+                            if chunk_id in chunks_to_delete:
+                                indices_to_delete.append(idx)
+                                del index_to_docstore_id[idx]
+                        
+                        if indices_to_delete:
+                            self.vector_store.index.remove_ids(np.array(indices_to_delete))
+                            logging.info(f"Removed {len(indices_to_delete)} vectors for deleted files")
+            
+            if not chunks and not deleted_files:
                 if changed_files:
                     logging.info("No valid chunks found in changed files")
                 return
             
-            # Track which chunks are being updated
-            changed_chunk_ids = set()
+            if chunks:
+                # Track which chunks are being updated
+                changed_chunk_ids = set()
+                
+                # Update docstore with new chunks
+                docstore = self.vector_store.docstore
+                for chunk in chunks:
+                    chunk_id = chunk["id"]
+                    changed_chunk_ids.add(chunk_id)
+                    doc = Document(
+                        page_content=chunk["content"],
+                        metadata=chunk
+                    )
+                    docstore._dict[chunk_id] = doc
+                
+                # Update embeddings only for changed chunks
+                self.update_embeddings_from_docstore(changed_chunk_ids)
             
-            # Update docstore with new chunks
-            docstore = self.vector_store.docstore
-            for chunk in chunks:
-                chunk_id = chunk["id"]
-                changed_chunk_ids.add(chunk_id)
-                doc = Document(
-                    page_content=chunk["content"],
-                    metadata=chunk
-                )
-                docstore._dict[chunk_id] = doc
-            
-            # Update embeddings only for changed chunks
-            self.update_embeddings_from_docstore(changed_chunk_ids)
+            # Always save the index after changes
+            save_faiss_index_metadata_and_docstore(
+                self.vector_store.index,
+                self.vector_store.index_to_docstore_id,
+                self.vector_store.docstore,
+                self._get_absolute_path(FAISS_INDEX_PATH),
+                self._get_absolute_path(METADATA_PATH),
+                self._get_absolute_path(DOCSTORE_PATH)
+            )
             
         except Exception as e:
             logging.error(f"Error updating embeddings: {str(e)}")
