@@ -20,6 +20,7 @@ from langchain.docstore.document import Document
 from vector_store_client import VectorStoreClient
 from document_processing import normalize_text
 import ollama
+import torch
 
 def setup_gradio_interface(context):
     """
@@ -95,32 +96,67 @@ def setup_gradio_interface(context):
             if not text:
                 return None
             try:
-                # Initialize Tortoise TTS with low VRAM settings
+                # Initialize Tortoise TTS with minimal settings for speed
                 tts = TextToSpeech(
                     kv_cache=True,
                     half=True,
-                    device="cuda"
+                    device="cuda",
+                    autoregressive_batch_size=1  # Minimize batch size
                 )
+
+                # Use the original default voice settings
+                voice_samples = None  # This will use the original default voice
                 
-                # Generate speech with minimal memory settings and proper tensor handling
-                gen = tts.tts_with_preset(
-                    text,
-                    voice_samples=None,
-                    preset='ultra_fast',
-                    use_deterministic_seed=True
-                )
+                # Split long text into smaller chunks at sentence boundaries
+                sentences = text.split('.')
+                max_chunk_length = 100  # Maximum characters per chunk
+                chunks = []
+                current_chunk = ""
                 
-                if isinstance(gen, tuple):
-                    gen = gen[0]  # Take first element if it's a tuple
-                if len(gen.shape) == 3:
-                    gen = gen.squeeze(0)  # Remove batch dimension if present
-                
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) < max_chunk_length:
+                        current_chunk += sentence + "."
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        current_chunk = sentence + "."
+                if current_chunk:
+                    chunks.append(current_chunk)
+
+                # Process each chunk with minimal settings
+                all_audio = []
+                for chunk in chunks:
+                    if not chunk.strip():
+                        continue
+                        
+                    gen = tts.tts_with_preset(
+                        chunk,
+                        voice_samples=voice_samples,  # Use consistent voice
+                        preset='ultra_fast',
+                        use_deterministic_seed=True,  # This helps keep the voice consistent
+                        num_autoregressive_samples=1,
+                        diffusion_iterations=10,
+                        cond_free=False,
+                        temperature=0.8
+                    )
+                    
+                    if isinstance(gen, tuple):
+                        gen = gen[0]
+                    if len(gen.shape) == 3:
+                        gen = gen.squeeze(0)
+                    
+                    all_audio.append(gen)
+
+                # Combine all audio chunks
+                if all_audio:
+                    combined_audio = torch.cat(all_audio, dim=1)
+                else:
+                    return None
+
                 # Create a temporary file
                 with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
                     temp_path = fp.name
-                    
-                    # Save the generated audio
-                    torchaudio.save(temp_path, gen.cpu(), 24000)
+                    torchaudio.save(temp_path, combined_audio.cpu(), 24000)
                     
                 return temp_path
             except Exception as e:
