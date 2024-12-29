@@ -12,3 +12,4 @@ SpeechRecognition==3.10.1
 soundfile==0.12.1
 gTTS==2.4.0
 watchdog==3.0.0
+tortoise-tts=3.0.0

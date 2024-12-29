@@ -4,15 +4,33 @@ import os
 import logging
 import config
 import tiktoken
+import nltk
 from nltk.tokenize import sent_tokenize, blankline_tokenize
 from nltk import download as nltk_download
-from dotenv import load_dotenv
 import re
 import json
+from dotenv import load_dotenv
 
-# Ensure that the 'punkt' tokenizer is downloaded.
-# This is used for sentence and paragraph tokenization for chunking.
-nltk_download('punkt_tab', download_dir='.')
+# Set NLTK data path to local directory and disable downloads
+nltk_data_dir = os.path.join(os.path.dirname(__file__), '..', 'nltk_data')
+nltk.data.path.insert(0, nltk_data_dir)
+
+# Only download if punkt_tab is missing
+def ensure_nltk_data():
+    """Ensure NLTK data is available, downloading only if missing."""
+    try:
+        # Try to load the tokenizer
+        nltk.data.find('tokenizers/punkt_tab')
+    except LookupError:
+        # If not found, download it
+        print("Downloading required NLTK data...")
+        if not os.path.exists(nltk_data_dir):
+            os.makedirs(nltk_data_dir)
+        nltk.download('punkt_tab', download_dir=nltk_data_dir, quiet=True)
+        print("Download complete.")
+
+# Check for NLTK data at startup
+ensure_nltk_data()
 
 CHUNK_OVERLAP_PERCENTAGE = int(config.CHUNK_OVERLAP_PERCENTAGE)
 
