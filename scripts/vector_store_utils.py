@@ -16,9 +16,10 @@ from document_processing import load_documents_from_folder, normalize_text
 import config
 
 def calculate_file_paths(script_dir, faiss_index_path, metadata_path, docstore_path):
-    faiss_index_path = os.path.join(script_dir, faiss_index_path)
-    metadata_path = os.path.join(script_dir, metadata_path)
-    docstore_path = os.path.join(script_dir, docstore_path)
+    project_root = os.path.dirname(script_dir)  # Go up one level to project root
+    faiss_index_path = os.path.join(project_root, faiss_index_path)
+    metadata_path = os.path.join(project_root, metadata_path)
+    docstore_path = os.path.join(project_root, docstore_path)
     return faiss_index_path, metadata_path, docstore_path
 
 def load_or_initialize_vector_store(

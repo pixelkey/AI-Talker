@@ -26,12 +26,14 @@ class VectorStoreClient:
     def _get_absolute_path(self, path):
         """Convert relative path to absolute path"""
         if not os.path.isabs(path):
-            # Get the project root directory (where scripts/ folder is)
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            # If path starts with ../, remove it since we're already at project root
-            if path.startswith("../"):
-                path = path[3:]
-            return os.path.join(project_root, path)
+            # Get the project root directory by resolving .. from scripts dir
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            logging.info(f"Script directory: {script_dir}")
+            project_root = os.path.abspath(os.path.join(script_dir, '..'))
+            logging.info(f"Project root: {project_root}")
+            final_path = os.path.join(project_root, path)
+            logging.info(f"Final path for {path}: {final_path}")
+            return final_path
         return path
         
     def update_embeddings_from_docstore(self, changed_chunks=None):
