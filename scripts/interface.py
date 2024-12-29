@@ -95,19 +95,32 @@ def setup_gradio_interface(context):
             if not text:
                 return None
             try:
-                # Initialize Tortoise TTS
-                tts = TextToSpeech()
+                # Initialize Tortoise TTS with low VRAM settings
+                tts = TextToSpeech(
+                    kv_cache=True,
+                    half=True,
+                    device="cuda"
+                )
                 
-                # Generate speech with default voice
-                # Using 'ultra_fast' preset for quicker generation
-                gen = tts.tts(text, voice_samples=None, preset='ultra_fast')
+                # Generate speech with minimal memory settings and proper tensor handling
+                gen = tts.tts_with_preset(
+                    text,
+                    voice_samples=None,
+                    preset='ultra_fast',
+                    use_deterministic_seed=True
+                )
+                
+                if isinstance(gen, tuple):
+                    gen = gen[0]  # Take first element if it's a tuple
+                if len(gen.shape) == 3:
+                    gen = gen.squeeze(0)  # Remove batch dimension if present
                 
                 # Create a temporary file
                 with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
                     temp_path = fp.name
                     
                     # Save the generated audio
-                    torchaudio.save(temp_path, gen.squeeze(0).cpu(), 24000)
+                    torchaudio.save(temp_path, gen.cpu(), 24000)
                     
                 return temp_path
             except Exception as e:
@@ -219,7 +232,7 @@ def setup_gradio_interface(context):
         submit_button.click(
             handle_user_input,
             inputs=[input_text, session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output],
+            outputs=[chat_history, references, input_text, session_state, audio_output, gr.Textbox(visible=False)],  # Add status output
         ).success(
             lambda: None,
             None,
