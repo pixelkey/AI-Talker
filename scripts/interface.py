@@ -27,8 +27,7 @@ def setup_gradio_interface(context):
     Returns:
         gr.Blocks: Gradio interface object.
     """
-    # Initialize chat history manager and state
-    chat_manager = ChatHistoryManager()
+    # Initialize state
     state = {"last_processed_index": 0}
 
     # Initialize vector store client and LLM client
@@ -129,6 +128,13 @@ def setup_gradio_interface(context):
 
         # Define a function to handle both reference retrieval and LLM response generation
         def handle_user_input(input_text, history):
+            # Create a new chat history manager for each session if history is empty
+            if not history:
+                chat_manager = ChatHistoryManager()
+                context['chat_manager'] = chat_manager
+            else:
+                chat_manager = context.get('chat_manager')
+                
             if not input_text.strip():
                 return history, "", "", history, None, ""
 
