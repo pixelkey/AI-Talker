@@ -46,7 +46,7 @@ def initialize_tts():
         
         print("Loading voice samples...")
         # Load voice samples and get conditioning latents
-        voice_samples = load_voice('train_dotrice', extra_voice_dirs=[])[0]  # Just get the samples
+        voice_samples = load_voice('emma', extra_voice_dirs=[])[0]  # Just get the samples
         print(f"Voice samples loaded: {len(voice_samples)} samples")
         
         print("Computing conditioning latents...")
