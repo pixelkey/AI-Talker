@@ -44,13 +44,13 @@ def initialize_tts():
         if torch.cuda.is_available():
             torch.cuda.manual_seed(42)
         
-        print("Loading voice samples...")
-        # Load voice samples and get conditioning latents
-        voice_samples = load_voice('emma', extra_voice_dirs=[])[0]  # Just get the samples
+        # Get voice from config
+        voice_name = os.getenv('TTS_VOICE', 'emma')
+        print(f"Loading voice samples for {voice_name}...")
+        voice_samples = load_voice(voice_name, extra_voice_dirs=[])[0]
         print(f"Voice samples loaded: {len(voice_samples)} samples")
         
         print("Computing conditioning latents...")
-        # Generate latents from samples
         gen_conditioning_latents = tts.get_conditioning_latents(voice_samples)
         print("Conditioning latents generated")
         

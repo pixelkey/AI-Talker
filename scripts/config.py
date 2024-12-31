@@ -33,6 +33,7 @@ env_config = {
     "CHUNK_SIZE_MAX": {"default": "512", "type": int},
     "CHUNK_OVERLAP_PERCENTAGE": {"default": "20", "type": int},
     "TOKEN_ENCODING": {"default": "cl100k_base", "type": str},
+    "TTS_VOICE": {"default": "emma", "type": str},  # Default TTS voice to use
 }
 
 # Reset environment variables before loading .env to ensure they are not reused
