@@ -32,7 +32,7 @@ def initialize_tts():
             "kv_cache": True,
             "half": True,
             "device": "cuda" if torch.cuda.is_available() else "cpu",
-            "autoregressive_batch_size": 2,
+            "autoregressive_batch_size": 1, # larger GPU memory usage if set more than 1
             "use_deepspeed": True
         }
         print(f"Initializing TTS with config: {tts_config}")
@@ -273,7 +273,7 @@ def setup_gradio_interface(context):
                             preset='ultra_fast',
                             use_deterministic_seed=True,
                             num_autoregressive_samples=1,
-                            diffusion_iterations=20,
+                            diffusion_iterations=10,
                             cond_free=True,
                             cond_free_k=2.0,
                             temperature=0.8
