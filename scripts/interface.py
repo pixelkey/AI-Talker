@@ -351,92 +351,99 @@ def setup_gradio_interface(context):
             except Exception as e:
                 return "", "", False, f"Error transcribing audio: {str(e)}"
 
-        # Define a function to handle both reference retrieval and LLM response generation
         def handle_user_input(input_text, history):
-            # Create a new chat history manager for each session if history is empty
-            if not history:
-                chat_manager = ChatHistoryManager()
-                context['chat_manager'] = chat_manager
-            else:
-                chat_manager = context.get('chat_manager')
-                
-            if not input_text.strip():
-                return history, "", "", history, None, ""
+            """Handle user input and generate response with proper state management."""
+            try:
+                # Validate input
+                if not input_text or not input_text.strip():
+                    return history, "", "", history, None, ""
 
-            # Get references and generate response
-            refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
-            
-            # Initialize history if needed
-            if history is None:
-                history = []
-            
-            # Add user message to history
-            history.append((input_text, None))
-            
-            # First yield to update UI with user message
-            yield history, refs, "", history, None, ""
+                # Create or get chat manager
+                if not history:
+                    chat_manager = ChatHistoryManager()
+                    context['chat_manager'] = chat_manager
+                else:
+                    chat_manager = context.get('chat_manager')
 
-            # Generate the LLM response
-            _, response, _ = chatbot_response(input_text, context_documents, context, history)
-            
-            # Add assistant response to history and save
-            history[-1] = (input_text, response)
-            chat_manager.save_history(history)
-            
-            # Generate speech for the response
-            print("\nGenerating TTS response...")
-            audio_path = text_to_speech(response)
-            print("TTS generation complete")
-            
-            # Yield the response with audio
-            yield history, refs, "", history, audio_path, "Response complete, updating embeddings..."
-            
-            print("\nUpdating embeddings...")
-            # Update embeddings after TTS is complete
-            new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
-            if new_messages:
-                chat_text = chat_manager.format_for_embedding(new_messages)
-                vector_store = context['vector_store']
-                vectors = context['embeddings'].embed_documents([chat_text])
-                vectors = np.array(vectors, dtype="float32")
-                faiss.normalize_L2(vectors)
-                vector_store.index.add(vectors)
+                # Get references and generate response
+                refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
                 
-                chunk_id = str(len(vector_store.index_to_docstore_id))
-                chunk = Document(
-                    page_content=chat_text,
-                    metadata={
-                        "id": chunk_id,
-                        "doc_id": "chat_history",
-                        "filename": os.path.basename(chat_manager.current_file),
-                        "filepath": "chat_history",
-                        "chunk_size": len(chat_text),
-                        "overlap_size": 0,
-                    },
-                )
-                vector_store.docstore._dict[chunk_id] = chunk
-                vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
-                state["last_processed_index"] = new_last_index
+                # Initialize history if needed
+                history = history or []
                 
-                # Save the updated index
-                save_faiss_index_metadata_and_docstore(
-                    vector_store.index,
-                    vector_store.index_to_docstore_id,
-                    vector_store.docstore,
-                    os.environ["FAISS_INDEX_PATH"],
-                    os.environ["METADATA_PATH"],
-                    os.environ["DOCSTORE_PATH"]
-                )
-                print("Embeddings update complete")
+                # Generate the LLM response
+                _, response, _ = chatbot_response(input_text, context_documents, context, history)
                 
-                # Now process any pending file changes
-                if hasattr(context['watcher'], 'pending_changes') and context['watcher'].pending_changes:
-                    pending = context['watcher'].pending_changes.copy()
-                    context['watcher'].pending_changes.clear()
-                    update_embeddings(pending)
-            
-            # Final yield after everything is complete
-            yield history, refs, "", history, audio_path, "Processing complete"
+                # Update history with the complete interaction
+                history.append((input_text, response))
+                chat_manager.save_history(history)
+                
+                # Generate speech for the response
+                print("\nGenerating TTS response...")
+                audio_path = text_to_speech(response)
+                print("TTS generation complete")
+                
+                # Update embeddings in background
+                def update_chat_embeddings():
+                    try:
+                        print("\nUpdating embeddings...")
+                        new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
+                        if new_messages:
+                            chat_text = chat_manager.format_for_embedding(new_messages)
+                            vector_store = context['vector_store']
+                            vectors = context['embeddings'].embed_documents([chat_text])
+                            vectors = np.array(vectors, dtype="float32")
+                            faiss.normalize_L2(vectors)
+                            vector_store.index.add(vectors)
+                            
+                            chunk_id = str(len(vector_store.index_to_docstore_id))
+                            chunk = Document(
+                                page_content=chat_text,
+                                metadata={
+                                    "id": chunk_id,
+                                    "doc_id": "chat_history",
+                                    "filename": os.path.basename(chat_manager.current_file),
+                                    "filepath": "chat_history",
+                                    "chunk_size": len(chat_text),
+                                    "overlap_size": 0,
+                                },
+                            )
+                            vector_store.docstore._dict[chunk_id] = chunk
+                            vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
+                            state["last_processed_index"] = new_last_index
+                            
+                            # Save the updated index
+                            save_faiss_index_metadata_and_docstore(
+                                vector_store.index,
+                                vector_store.index_to_docstore_id,
+                                vector_store.docstore,
+                                os.environ["FAISS_INDEX_PATH"],
+                                os.environ["METADATA_PATH"],
+                                os.environ["DOCSTORE_PATH"]
+                            )
+                            print("Embeddings update complete")
+                            
+                            # Process any pending file changes
+                            if hasattr(context['watcher'], 'pending_changes') and context['watcher'].pending_changes:
+                                pending = context['watcher'].pending_changes.copy()
+                                context['watcher'].pending_changes.clear()
+                                update_embeddings(pending)
+                    except Exception as e:
+                        print(f"Error updating embeddings: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+
+                # Start background thread for embedding updates
+                import threading
+                threading.Thread(target=update_chat_embeddings, daemon=True).start()
+                
+                return history, refs, "", history, audio_path, "Processing complete"
+                
+            except Exception as e:
+                print(f"Error in handle_user_input: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return history, "", "", history, None, f"Error: {str(e)}"
 
         def clear_interface(history):
             cleared_history, cleared_refs, cleared_input = clear_history(context, history)
