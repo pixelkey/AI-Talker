@@ -20,6 +20,7 @@ class SelfReflection:
         self.is_reflecting = False
         self.history_manager = SelfReflectionHistoryManager()
         self.history_manager.start_new_session()
+        self.embedding_updater = context['embedding_updater']
         logger.info("SelfReflection initialized")
 
     def start_reflection(self, chat_history, update_ui_callback):
@@ -46,6 +47,7 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 max_reflections = 3  # Limit the number of reflections per session
+                reflection_history = []  # Keep track of reflections for embedding updates
                 
                 while not self.stop_reflection.is_set() and reflection_count < max_reflections:
                     # Check for user input
@@ -91,11 +93,18 @@ class SelfReflection:
                         }
                     )
                     
+                    # Add reflection to history for embedding update
+                    reflection_history.append((
+                        f"Self-Reflection #{reflection_count + 1}",
+                        reflection
+                    ))
+                    
                     try:
                         # Update UI with reflection
                         logger.info("Updating UI with reflection")
-                        result = update_ui_callback(full_reflection)
-                        logger.info(f"UI update result: {result}")
+                        if update_ui_callback:
+                            result = update_ui_callback(full_reflection)
+                            logger.info(f"UI update result: {result}")
                     except Exception as e:
                         logger.error(f"Error updating UI: {str(e)}", exc_info=True)
                     
@@ -105,6 +114,17 @@ class SelfReflection:
                     if reflection_count < max_reflections:
                         logger.info(f"Sleeping before next reflection ({reflection_count}/{max_reflections})")
                         time.sleep(5)  # Increased sleep time to make reflections more noticeable
+                    
+                # Update embeddings with all reflections at once
+                if reflection_history:
+                    logger.info(f"Updating embeddings with {len(reflection_history)} reflections")
+                    try:
+                        # Create a temporary state for reflection updates
+                        reflection_state = {"last_processed_index": 0}
+                        self.embedding_updater.update_chat_embeddings_async(reflection_history, reflection_state)
+                        logger.info("Embeddings update started")
+                    except Exception as e:
+                        logger.error(f"Error updating embeddings: {str(e)}", exc_info=True)
                     
             except Exception as e:
                 logger.error(f"Error in reflection loop: {str(e)}", exc_info=True)

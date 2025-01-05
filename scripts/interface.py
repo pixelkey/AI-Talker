@@ -15,6 +15,7 @@ from tts_utils import TTSManager
 from embedding_updater import EmbeddingUpdater
 from speech_recognition_utils import SpeechRecognizer
 from self_reflection import SelfReflection
+from queue import Queue
 
 def setup_gradio_interface(context):
     """
@@ -34,9 +35,6 @@ def setup_gradio_interface(context):
     
     # Initialize speech recognizer
     speech_recognizer = SpeechRecognizer()
-    
-    # Initialize self reflection
-    self_reflection = SelfReflection(context)
     
     # Initialize state
     state = {"last_processed_index": 0}
@@ -59,6 +57,10 @@ def setup_gradio_interface(context):
 
     # Initialize embedding updater
     embedding_updater = EmbeddingUpdater(context)
+    context['embedding_updater'] = embedding_updater
+    
+    # Initialize self reflection after embedding updater is in context
+    self_reflection = SelfReflection(context)
     
     # Create the watcher but don't start it yet - we'll manually trigger updates
     watcher = IngestWatcher(embedding_updater.update_embeddings)
@@ -93,15 +95,27 @@ def setup_gradio_interface(context):
             print("TTS generation complete")
             
             # Update embeddings in background
-            embedding_updater.update_chat_embeddings_async(history, state)
+            context['embedding_updater'].update_chat_embeddings_async(history, state)
             
             # Start self-reflection after response
             print("\nStarting self-reflection...")
+            
+            # Create a queue for reflection updates
+            reflection_queue = Queue()
+            
             def update_ui_with_reflection(reflection_text):
-                print(f"Updating reflection box with: {reflection_text[:100]}...")
+                print(f"Queuing reflection update: {reflection_text[:100]}...")
+                reflection_queue.put(reflection_text)
                 return gr.update(value=reflection_text)
             
             self_reflection.start_reflection(new_history, update_ui_with_reflection)
+            
+            # Function to check reflection queue
+            def check_reflection_queue():
+                if not reflection_queue.empty():
+                    reflection_text = reflection_queue.get()
+                    return gr.update(value=reflection_text)
+                return gr.update(value="Waiting for reflection...")
             
             return (
                 new_history,  # chatbot
@@ -110,7 +124,7 @@ def setup_gradio_interface(context):
                 new_history, # session_state
                 audio_path,  # audio_output
                 "",         # status
-                gr.update(value="Starting reflection...")  # reflection_box
+                check_reflection_queue()  # reflection_box
             )
             
         except Exception as e:
@@ -161,7 +175,9 @@ def setup_gradio_interface(context):
                     label="Self-Reflection",
                     placeholder="Agent's self-reflections will appear here...",
                     lines=10,
-                    max_lines=20
+                    max_lines=20,
+                    interactive=False,
+                    every=1  # Update every second
                 )
                 audio_status = gr.Textbox(
                     show_label=False,
@@ -192,7 +208,7 @@ def setup_gradio_interface(context):
                 status,
                 reflection_box
             ],
-            queue=False
+            queue=True  # Enable queueing for updates
         ).success(
             lambda: gr.update(interactive=True),
             None,
@@ -212,7 +228,7 @@ def setup_gradio_interface(context):
                 status,
                 reflection_box
             ],
-            queue=False
+            queue=True  # Enable queueing for updates
         )
         
         # Audio input with auto-submit
@@ -237,7 +253,7 @@ def setup_gradio_interface(context):
                 status,
                 reflection_box
             ],
-            queue=False
+            queue=True  # Enable queueing for updates
         )
         
         clear_btn = gr.Button("Clear")

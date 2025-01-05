@@ -220,11 +220,18 @@ def clear_history(context, history):
     Returns:
         Tuple: Cleared chat history, cleared references, cleared input field, and session state.
     """
-    # Ensure history is treated as a list before clearing
-    if not isinstance(history, list):
-        history = []
+    try:
+        # Clear memory
+        if context.get("memory"):
+            context["memory"].clear()
 
-    context["memory"].clear()  # Clear the conversation memory
-    history.clear()  # Clear the history in the session state
-    
-    return "", "", "", history
+        # Clear chat history
+        cleared_history = []
+        cleared_refs = ""
+        cleared_input = ""
+
+        return cleared_history, cleared_refs, cleared_input
+
+    except Exception as e:
+        logging.error(f"Error clearing history: {e}")
+        return history, "", ""

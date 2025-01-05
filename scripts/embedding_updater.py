@@ -6,6 +6,8 @@ from faiss_utils import save_faiss_index_metadata_and_docstore
 from langchain.docstore.document import Document
 import threading
 
+logger = logging.getLogger(__name__)
+
 class EmbeddingUpdater:
     def __init__(self, context):
         """
@@ -15,6 +17,8 @@ class EmbeddingUpdater:
             context (dict): Contains loader, chunker, vector_store and other necessary components
         """
         self.context = context
+        self.update_thread = None
+        self.reflection_thread = None
 
     def update_embeddings(self, changed_files=None):
         """
@@ -152,8 +156,14 @@ class EmbeddingUpdater:
             history (list): Chat history to update embeddings with
             state (dict): State containing last_processed_index
         """
-        threading.Thread(
-            target=self.update_chat_embeddings,
-            args=(history, state),
-            daemon=True
-        ).start()
+        def update_embeddings():
+            try:
+                logger.info("Starting chat history embedding update")
+                self.update_chat_embeddings(history, state)
+                logger.info("Chat history embedding update complete")
+            except Exception as e:
+                logger.error(f"Error updating chat embeddings: {str(e)}", exc_info=True)
+
+        self.update_thread = threading.Thread(target=update_embeddings)
+        self.update_thread.daemon = True
+        self.update_thread.start()
