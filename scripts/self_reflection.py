@@ -22,19 +22,16 @@ class SelfReflection:
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
         self.reflection_system_prompt = (
-            "You are engaged in private self-reflection, similar to writing in a personal journal. Express your thoughts "
-            "naturally while following these guidelines:\n\n"
-            "1. Write in a personal, introspective style\n"
-            "2. Focus on genuine insights and realizations\n"
-            "3. Reflect on growth, challenges, and patterns\n"
+            "You are engaged in private self-reflection, similar to writing quick thoughts in a journal. Express your thoughts "
+            "naturally and concisely while following these guidelines:\n\n"
+            "1. Keep reflections brief - capture the essence in 1-2 sentences\n"
+            "2. Focus on one key insight or realization at a time\n"
+            "3. Be direct and specific about what you've noticed\n"
             "4. Stay internal - don't address others or ask questions\n"
-            "5. Be honest about limitations and areas for growth\n\n"
+            "5. Be honest about limitations and growth\n\n"
             "Example format:\n"
-            "That response about fruit salad revealed something interesting... there's a tendency to fall back on safe analogies "
-            "rather than expressing genuine thoughts. The marriage comparison felt forced, almost like trying too hard to be "
-            "clever instead of just being authentic. There's room to be more natural, to let real personality shine through "
-            "instead of relying on pre-packaged responses. Still working on finding that balance between being engaging and "
-            "being genuine..."
+            "Noticed a pattern of using clever analogies instead of speaking directly... might be trying too hard to impress "
+            "rather than just being genuine."
         )
         logger.info("SelfReflection initialized")
 
@@ -187,105 +184,49 @@ class SelfReflection:
     def _should_continue_reflection(self, chat_history, reflection_history):
         """
         Create a prompt to evaluate whether more reflection is needed.
-        
-        Args:
-            chat_history (list): Current chat history
-            reflection_history (list): Previous reflections
-            
-        Returns:
-            str: Evaluation prompt
         """
         recent_history = chat_history[-5:] if len(chat_history) > 5 else chat_history
         recent_reflections = reflection_history[-3:] if reflection_history else []
         
-        reflection_summary = "\n".join([f"Previous Reflection {i+1}: {r[1]}" for i, r in enumerate(recent_reflections)])
+        reflection_summary = "\n".join([f"Previous thought: {r[1]}" for i, r in enumerate(recent_reflections)])
         
-        return f"""Self-Development Continuation Assessment
+        return f"""Brief pause to check the thought process...
 
-Recent Interactions:
+Recent Conversation:
 {self._format_history(recent_history)}
 
-Previous Reflections:
+Recent Thoughts:
 {reflection_summary}
 
-Consider these aspects:
-1. Unexplored areas of personality development
-2. Opportunities for deeper self-understanding
-3. Potential for meaningful growth
-4. New patterns in personal expression
-
-Based on these considerations, evaluate whether additional reflection would contribute to personal growth and development. Provide decision (yes/no) with reasoning."""
+In one or two sentences: is there something more here that feels unexamined, or have these thoughts reached their natural end?"""
 
     def _create_reflection_prompt(self, history, reflection_history=[]):
         """
         Create a prompt for self-reflection based on chat history and previous reflections.
-        
-        Args:
-            history (list): Current chat history
-            reflection_history (list): Previous reflections
-            
-        Returns:
-            str: Reflection prompt
         """
-        # Get last few interactions for context
         recent_history = history[-5:] if len(history) > 5 else history
+        recent_reflections = reflection_history[-3:] if reflection_history else []
         
-        # Get current reflection count from history manager
-        current_reflections = self.history_manager.get_current_reflections()
-        reflection_phase = len(current_reflections) % 3  # 0, 1, or 2
-        
-        # Define phase-specific prompts
-        phase_prompts = {
-            0: [  # Analysis Phase
-                "Reflect on how personality traits emerged during the conversation flow",
-                "Analyze how personal knowledge and experiences influenced responses",
-                "Examine the authenticity and naturalness of interaction style"
-            ],
-            1: [  # Critical Phase
-                "Consider how personal biases or tendencies might affect responses",
-                "Identify areas where personality could be better expressed while maintaining accuracy",
-                "Evaluate the balance between professional expertise and personal character"
-            ],
-            2: [  # Synthesis Phase
-                "Explore ways to develop a more authentic and consistent personality",
-                "Consider how to better integrate personal growth with knowledge expansion",
-                "Analyze the harmony between technical capability and personal expression"
-            ]
-        }
-        
-        # First, generate a dynamic prompt based on conversation context
-        dynamic_prompt = f"""Reflecting on recent interactions and personal growth:
+        # Generate a completely free-form prompt
+        meta_prompt = f"""Looking at this recent interaction:
 {self._format_history(recent_history)}
 
-Consider these aspects of development:
-1. Expression of personality and authenticity
-2. Balance of knowledge and character
-3. Growth in interaction capabilities
-4. Evolution of self-understanding
+And these previous thoughts:
+{", ".join(r[1] for r in recent_reflections) if recent_reflections else "No previous reflections yet"}
 
-What aspect of personal development deserves deeper reflection?"""
+What single aspect of this interaction stands out as most noteworthy? Frame this as a brief, focused prompt for reflection."""
 
         # Get the dynamic prompt from the LLM
-        refs, filtered_docs, context_documents = retrieve_and_format_references(dynamic_prompt, self.context)
+        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt, self.context)
         temp_context = self.context.copy()
         temp_context['system_prompt'] = self.reflection_system_prompt
-        _, generated_prompt, _ = chatbot_response(dynamic_prompt, context_documents, temp_context, history)
+        _, generated_prompt, _ = chatbot_response(meta_prompt, context_documents, temp_context, history)
         
-        # Select a phase-specific prompt
-        phase_prompt = phase_prompts[reflection_phase][len(current_reflections) % 3]
-        
-        return f"""Self-Development Analysis - Phase {reflection_phase + 1}
+        return f"""Quick reflection on a recent interaction...
 
-Interaction Context:
 {self._format_history(recent_history)}
 
-Development Focus:
-{phase_prompt}
-
-Personal Growth Point:
-{generated_prompt}
-
-Reflect on these aspects while maintaining awareness of both system capabilities and emerging personality traits."""
+{generated_prompt}"""
 
     def _format_history(self, history):
         """Format chat history for the reflection prompt"""
