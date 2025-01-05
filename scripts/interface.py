@@ -5,12 +5,8 @@ from chatbot_functions import chatbot_response, clear_history, retrieve_and_form
 from chat_history import ChatHistoryManager
 from ingest_watcher import IngestWatcher
 from faiss_utils import save_faiss_index_metadata_and_docstore
-import speech_recognition as sr
 import numpy as np
 import io
-import soundfile as sf
-import torchaudio
-import torch
 import tempfile
 import os
 import logging
@@ -22,6 +18,7 @@ import ollama
 import time
 from tts_utils import TTSManager
 from embedding_updater import EmbeddingUpdater
+from speech_recognition_utils import SpeechRecognizer
 
 def setup_gradio_interface(context):
     """
@@ -39,6 +36,9 @@ def setup_gradio_interface(context):
         print("Failed to initialize TTS")
         return None
         
+    # Initialize speech recognizer
+    speech_recognizer = SpeechRecognizer()
+    
     # Initialize state
     state = {"last_processed_index": 0}
 
@@ -64,25 +64,6 @@ def setup_gradio_interface(context):
     # Create the watcher but don't start it yet - we'll manually trigger updates
     watcher = IngestWatcher(embedding_updater.update_embeddings)
     context['watcher'] = watcher
-
-    def transcribe_audio(audio_path):
-        """Transcribe audio file to text"""
-        if audio_path is None:
-            return "", "", None
-        
-        try:
-            # Initialize recognizer
-            recognizer = sr.Recognizer()
-            
-            # Use the audio file directly
-            with sr.AudioFile(audio_path) as source:
-                audio = recognizer.record(source)
-            
-            # Perform the recognition
-            text = recognizer.recognize_google(audio)
-            return text, text, f"Transcribed: {text}"
-        except Exception as e:
-            return "", "", f"Error transcribing audio: {str(e)}"
 
     def handle_user_input(input_text, history):
         """Handle user input and generate response with proper state management."""
@@ -172,13 +153,14 @@ def setup_gradio_interface(context):
         
         # Audio input with auto-submit
         audio_input.change(
-            transcribe_audio,
+            speech_recognizer.transcribe_audio,
             inputs=[audio_input],
             outputs=[
                 input_text,           # recognized text
                 gr.Textbox(visible=False),  # for debug message
                 gr.Textbox(visible=False),  # status message
-            ]
+            ],
+            queue=False
         ).success(
             handle_user_input,
             inputs=[input_text, session_state],
