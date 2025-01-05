@@ -134,18 +134,32 @@ class SelfReflection:
                     logger.info(f"Continuation decision: {decision}")
                     
                     # Check for explicit stop signals
-                    stop_signals = ["complete", "nothing more", "natural end", "finished", "enough"]
+                    stop_signals = ["complete", "nothing more", "natural end", "finished", "that's all", "no other aspects"]
                     found_stop = any(signal in decision.lower() for signal in stop_signals)
                     
-                    # Check for continuation signals
-                    continue_signals = ["could explore", "worth exploring", "another angle", "also notice", "thinking about", 
-                                     "interesting to consider", "might be worth", "curious about"]
+                    # More flexible continuation signals
+                    continue_signals = [
+                        "could explore", "worth exploring", "another angle", "also notice", "thinking about",
+                        "interesting to", "might be worth", "curious about", "seems like", "notice that",
+                        "reminds me", "stands out", "appears to", "suggests", "reveals"
+                    ]
                     found_continue = any(signal in decision.lower() for signal in continue_signals)
                     
                     logger.info(f"Stop signals found: {found_stop}, Continue signals found: {found_continue}")
                     
-                    # Stop if we find explicit stop signals or don't find any continuation signals
-                    if found_stop or (not found_continue and reflection_count >= 2):
+                    # More flexible continuation logic
+                    should_stop = False
+                    if reflection_count < 2:
+                        # Always continue for first two reflections unless explicit stop
+                        should_stop = found_stop
+                    elif reflection_count < 4:
+                        # Between 2-4 reflections, continue unless stop signal or clearly no continuation
+                        should_stop = found_stop or (not found_continue and "complete" in decision.lower())
+                    else:
+                        # After 4 reflections, require explicit continuation signal
+                        should_stop = found_stop or not found_continue
+                    
+                    if should_stop:
                         logger.info(f"Stopping reflections: count={reflection_count}, found_stop={found_stop}, found_continue={found_continue}")
                         logger.info(f"Final decision: {decision}")
                         break
@@ -153,7 +167,18 @@ class SelfReflection:
                     logger.info("Continuing reflection based on: " + decision[:100])
                     # Brief pause between reflections
                     time.sleep(2)
-                    
+                
+                # Update embeddings with all reflections at once
+                if reflection_history:
+                    logger.info(f"Updating embeddings with {len(reflection_history)} reflections")
+                    try:
+                        # Create a temporary state for reflection updates
+                        reflection_state = {"last_processed_index": 0}
+                        self.embedding_updater.update_chat_embeddings_async(reflection_history, reflection_state)
+                        logger.info("Embeddings update started")
+                    except Exception as e:
+                        logger.error(f"Error updating embeddings: {str(e)}", exc_info=True)
+                
             except Exception as e:
                 logger.error(f"Error in reflection loop: {str(e)}", exc_info=True)
             finally:
@@ -197,6 +222,8 @@ class SelfReflection:
         pressure = ""
         if reflection_count >= 5:
             pressure = "\n\nThese reflections are becoming quite extensive. Is there truly more to uncover?"
+        elif reflection_count <= 2:
+            pressure = "\n\nFeel free to explore another aspect if something catches your attention."
         
         return f"""Looking at these thoughts so far...
 
@@ -206,7 +233,7 @@ Recent Conversation:
 Previous Thoughts:
 {reflection_summary}
 
-Take a moment to consider: What other aspects of this interaction feel worth exploring? If you see another angle to examine, describe it briefly. If nothing more stands out, simply acknowledge that the reflection feels complete.{pressure}"""
+What other aspects of this interaction seem interesting or noteworthy? Share your thoughts if you notice something worth exploring.{pressure}"""
 
     def _create_reflection_prompt(self, history, reflection_history=[]):
         """
