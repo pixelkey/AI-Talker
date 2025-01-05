@@ -5,7 +5,12 @@ from chatbot_functions import chatbot_response, clear_history, retrieve_and_form
 from chat_history import ChatHistoryManager
 from ingest_watcher import IngestWatcher
 from faiss_utils import save_faiss_index_metadata_and_docstore
+import speech_recognition as sr
+import numpy as np
 import io
+import soundfile as sf
+import torchaudio
+import torch
 import tempfile
 import os
 import logging
