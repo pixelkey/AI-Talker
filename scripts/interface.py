@@ -14,6 +14,7 @@ import time
 from tts_utils import TTSManager
 from embedding_updater import EmbeddingUpdater
 from speech_recognition_utils import SpeechRecognizer
+from self_reflection import SelfReflection
 
 def setup_gradio_interface(context):
     """
@@ -30,9 +31,12 @@ def setup_gradio_interface(context):
     if not context.get('tts'):
         print("Failed to initialize TTS")
         return None
-        
+    
     # Initialize speech recognizer
     speech_recognizer = SpeechRecognizer()
+    
+    # Initialize self reflection
+    self_reflection = SelfReflection(context)
     
     # Initialize state
     state = {"last_processed_index": 0}
@@ -63,9 +67,12 @@ def setup_gradio_interface(context):
     def handle_user_input(input_text, history):
         """Handle user input and generate response with proper state management."""
         try:
+            # Notify self-reflection about user input
+            self_reflection.notify_user_input()
+            
             # Validate input
             if not input_text or not input_text.strip():
-                return history, "", "", history, None, ""
+                return history, "", "", history, None, "", gr.update(value="")
 
             # Get chat manager from context
             chat_manager = context['chat_manager']
@@ -88,62 +95,124 @@ def setup_gradio_interface(context):
             # Update embeddings in background
             embedding_updater.update_chat_embeddings_async(history, state)
             
-            return history + [(f"User: {input_text}", f"Bot: {response}")], refs, "", history + [(f"User: {input_text}", f"Bot: {response}")], audio_path, "Processing complete"
+            # Start self-reflection after response
+            print("\nStarting self-reflection...")
+            def update_ui_with_reflection(reflection_text):
+                print(f"Updating reflection box with: {reflection_text[:100]}...")
+                return gr.update(value=reflection_text)
+            
+            self_reflection.start_reflection(new_history, update_ui_with_reflection)
+            
+            return (
+                new_history,  # chatbot
+                refs,         # references
+                "",          # input_text
+                new_history, # session_state
+                audio_path,  # audio_output
+                "",         # status
+                gr.update(value="Starting reflection...")  # reflection_box
+            )
             
         except Exception as e:
             print(f"Error in handle_user_input: {str(e)}")
             import traceback
             traceback.print_exc()
-            return history, "", "", history, None, f"Error: {str(e)}"
+            return history, "", "", history, None, f"Error: {str(e)}", gr.update(value="Error during reflection")
 
     def clear_interface(history):
+        # Stop any ongoing reflection when clearing
+        self_reflection.stop_reflection_loop()
         cleared_history, cleared_refs, cleared_input = clear_history(context, history)
-        return [], cleared_refs, cleared_input, [], None, ""
+        return [], cleared_refs, cleared_input, [], None, "", gr.update(value="")
 
-    # Setup event handlers with explicit state management
-    with gr.Blocks(css=".separator { margin: 8px 0; border-bottom: 1px solid #ddd; }") as app:
-        # Output fields
-        chat_history = gr.Chatbot(label="Chat History", height=400)
-        references = gr.Textbox(label="References", lines=2, interactive=False)
-        audio_output = gr.Audio(
-            label="Response Audio", 
-            visible=True, 
-            autoplay=True,
-            show_download_button=False
-        )
-
-        # Input fields
+    # Create Gradio interface
+    with gr.Blocks() as interface:
+        # Create interface components
         with gr.Row():
-            input_text = gr.Textbox(label="Input Text", scale=4)
-            audio_input = gr.Audio(
-                label="Voice Input", 
-                sources=["microphone"],
-                type="filepath",
-                streaming=False
-            )
-
-        with gr.Row():
-            submit_button = gr.Button("Submit", visible=True)
-            clear_button = gr.Button("Clear")
-
-        # Initialize session state separately for each user
-        session_state = gr.State(value=[])
-
-        submit_button.click(
+            with gr.Column(scale=4):
+                chatbot = gr.Chatbot(
+                    [],
+                    elem_id="chatbot",
+                    height=400,
+                    show_label=False,
+                    layout="bubble"
+                )
+                references = gr.Textbox(
+                    show_label=False,
+                    placeholder="References will appear here...",
+                    lines=4
+                )
+                with gr.Row():
+                    with gr.Column(scale=8):
+                        input_text = gr.Textbox(
+                            show_label=False,
+                            placeholder="Enter text and press enter, or use the microphone...",
+                            lines=1
+                        )
+                    with gr.Column(scale=2, min_width=0):
+                        submit_text = gr.Button("Submit")
+                status = gr.Textbox(
+                    show_label=False,
+                    placeholder="Status will appear here...",
+                    lines=1
+                )
+            with gr.Column(scale=2):
+                reflection_box = gr.Textbox(
+                    label="Self-Reflection",
+                    placeholder="Agent's self-reflections will appear here...",
+                    lines=10,
+                    max_lines=20
+                )
+                audio_status = gr.Textbox(
+                    show_label=False,
+                    placeholder="Audio status will appear here...",
+                    lines=1
+                )
+                audio_input = gr.Audio(
+                    sources=["microphone"],
+                    type="filepath",
+                    label="Speak",
+                    show_label=True
+                )
+                audio_output = gr.Audio(
+                    label="Response",
+                    show_label=True
+                )
+                
+        # Set up event handlers
+        submit_text.click(
             handle_user_input,
-            inputs=[input_text, session_state],
+            inputs=[input_text, chatbot],
             outputs=[
-                chat_history,     # updated chat history 
-                references,       # references
-                input_text,       # clear or reset user input
-                session_state,    # updated session state
-                audio_output,     # audio file path
-                gr.Textbox(visible=False)  # status or debug
-            ]
+                chatbot,
+                references,
+                input_text,
+                gr.State(value=[]),
+                audio_output,
+                status,
+                reflection_box
+            ],
+            queue=False
         ).success(
-            lambda: None,
+            lambda: gr.update(interactive=True),
             None,
-            audio_input
+            [submit_text],
+            queue=False
+        )
+        
+        input_text.submit(
+            handle_user_input,
+            inputs=[input_text, chatbot],
+            outputs=[
+                chatbot,
+                references,
+                input_text,
+                gr.State(value=[]),
+                audio_output,
+                status,
+                reflection_box
+            ],
+            queue=False
         )
         
         # Audio input with auto-submit
@@ -151,43 +220,40 @@ def setup_gradio_interface(context):
             speech_recognizer.transcribe_audio,
             inputs=[audio_input],
             outputs=[
-                input_text,           # recognized text
-                gr.Textbox(visible=False),  # for debug message
-                gr.Textbox(visible=False),  # status message
+                input_text,
+                submit_text,
+                audio_status
             ],
             queue=False
         ).success(
             handle_user_input,
-            inputs=[input_text, session_state],
+            inputs=[input_text, chatbot],
             outputs=[
-                chat_history,     # updated chat history 
-                references,       # references
-                input_text,       # clear or reset user input
-                session_state,    # updated session state
-                audio_output,     # audio file path
-                gr.Textbox(visible=False)  # status or debug
-            ]
+                chatbot,
+                references,
+                input_text,
+                gr.State(value=[]),
+                audio_output,
+                status,
+                reflection_box
+            ],
+            queue=False
         )
         
-        # Add text input submission via Enter key with the same outputs as submit button
-        input_text.submit(
-            handle_user_input,
-            inputs=[input_text, session_state],
-            outputs=[
-                chat_history,     # updated chat history 
-                references,       # references
-                input_text,       # clear or reset user input
-                session_state,    # updated session state
-                audio_output,     # audio file path
-                gr.Textbox(visible=False)  # status or debug
-            ]
-        )
-        
-        # Clear button
-        clear_button.click(
+        clear_btn = gr.Button("Clear")
+        clear_btn.click(
             clear_interface,
-            inputs=[session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output, gr.Textbox(visible=False)]
+            inputs=[chatbot],
+            outputs=[
+                chatbot,
+                references,
+                input_text,
+                gr.State(value=[]),
+                audio_output,
+                status,
+                reflection_box
+            ],
+            queue=False
         )
 
-    return app
+    return interface
