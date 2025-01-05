@@ -338,7 +338,7 @@ def setup_gradio_interface(context):
         def transcribe_audio(audio_path):
             """Transcribe audio file to text"""
             if audio_path is None:
-                return "", "", False, "No audio received"
+                return "", "", None
             
             try:
                 # Initialize recognizer
@@ -350,11 +350,9 @@ def setup_gradio_interface(context):
                 
                 # Perform the recognition
                 text = recognizer.recognize_google(audio)
-                # Return text and trigger submit if you want auto-submission
-                # For now, just fill the box and let the user press Submit/Enter:
-                return text, text, False, f"Transcribed: {text}"
+                return text, text, f"Transcribed: {text}"
             except Exception as e:
-                return "", "", False, f"Error transcribing audio: {str(e)}"
+                return "", "", f"Error transcribing audio: {str(e)}"
 
         def handle_user_input(input_text, history):
             """Handle user input and generate response with proper state management."""
@@ -459,23 +457,33 @@ def setup_gradio_interface(context):
                 session_state,    # updated session state
                 audio_output,     # audio file path
                 gr.Textbox(visible=False)  # status or debug
-            ],
+            ]
         ).success(
             lambda: None,
             None,
             audio_input
         )
         
-        # Stop automatically chaining handle_user_input after transcribe_audio.
-        # Let the user press Submit (or Enter) to invoke handle_user_input *once*.
+        # Audio input with auto-submit
         audio_input.change(
             transcribe_audio,
             inputs=[audio_input],
             outputs=[
                 input_text,           # recognized text
-                gr.Textbox(visible=False),
-                gr.Checkbox(visible=False),
-            ],
+                gr.Textbox(visible=False),  # for debug message
+                gr.Textbox(visible=False),  # status message
+            ]
+        ).success(
+            handle_user_input,
+            inputs=[input_text, session_state],
+            outputs=[
+                chat_history,     # updated chat history 
+                references,       # references
+                input_text,       # clear or reset user input
+                session_state,    # updated session state
+                audio_output,     # audio file path
+                gr.Textbox(visible=False)  # status or debug
+            ]
         )
         
         # Add text input submission via Enter key with the same outputs as submit button
