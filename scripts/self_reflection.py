@@ -59,25 +59,13 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 reflection_history = []  # Keep track of reflections for embedding updates
+                MAX_REFLECTIONS = 7  # Absolute maximum to prevent endless loops
                 
-                while not self.stop_reflection.is_set():
+                while not self.stop_reflection.is_set() and reflection_count < MAX_REFLECTIONS:
                     # Check for user input
                     if not self.user_input_queue.empty():
                         logger.info("User input detected, stopping reflection")
                         break
-                        
-                    # After completing the basic three phases, evaluate if more reflection is needed
-                    if reflection_count >= 3:
-                        continuation_prompt = self._should_continue_reflection(chat_history, reflection_history)
-                        refs, filtered_docs, context_documents = retrieve_and_format_references(continuation_prompt, self.context)
-                        temp_context = self.context.copy()
-                        temp_context['system_prompt'] = self.reflection_system_prompt
-                        _, decision, _ = chatbot_response(continuation_prompt, context_documents, temp_context, chat_history)
-                        
-                        if "no" in decision.lower() or "stop" in decision.lower() or "complete" in decision.lower():
-                            logger.info("Reflection cycle complete, stopping based on self-evaluation")
-                            break
-                        logger.info("Continuing reflection based on self-evaluation")
                     
                     # Generate a reflection prompt
                     logger.info("Generating reflection prompt")
@@ -136,21 +124,35 @@ class SelfReflection:
                     
                     reflection_count += 1
                     
-                    # Sleep briefly to prevent overwhelming the system
-                    if reflection_count < 3:
-                        logger.info(f"Sleeping before next reflection ({reflection_count}/3)")
-                        time.sleep(5)  # Increased sleep time to make reflections more noticeable
+                    # Check if we should continue reflecting
+                    continuation_prompt = self._should_continue_reflection(chat_history, reflection_history)
+                    refs, filtered_docs, context_documents = retrieve_and_format_references(continuation_prompt, self.context)
+                    temp_context = self.context.copy()
+                    temp_context['system_prompt'] = self.reflection_system_prompt
+                    _, decision, _ = chatbot_response(continuation_prompt, context_documents, temp_context, chat_history)
                     
-                # Update embeddings with all reflections at once
-                if reflection_history:
-                    logger.info(f"Updating embeddings with {len(reflection_history)} reflections")
-                    try:
-                        # Create a temporary state for reflection updates
-                        reflection_state = {"last_processed_index": 0}
-                        self.embedding_updater.update_chat_embeddings_async(reflection_history, reflection_state)
-                        logger.info("Embeddings update started")
-                    except Exception as e:
-                        logger.error(f"Error updating embeddings: {str(e)}", exc_info=True)
+                    logger.info(f"Continuation decision: {decision}")
+                    
+                    # Check for explicit stop signals
+                    stop_signals = ["complete", "nothing more", "natural end", "finished", "enough"]
+                    found_stop = any(signal in decision.lower() for signal in stop_signals)
+                    
+                    # Check for continuation signals
+                    continue_signals = ["could explore", "worth exploring", "another angle", "also notice", "thinking about", 
+                                     "interesting to consider", "might be worth", "curious about"]
+                    found_continue = any(signal in decision.lower() for signal in continue_signals)
+                    
+                    logger.info(f"Stop signals found: {found_stop}, Continue signals found: {found_continue}")
+                    
+                    # Stop if we find explicit stop signals or don't find any continuation signals
+                    if found_stop or (not found_continue and reflection_count >= 2):
+                        logger.info(f"Stopping reflections: count={reflection_count}, found_stop={found_stop}, found_continue={found_continue}")
+                        logger.info(f"Final decision: {decision}")
+                        break
+                    
+                    logger.info("Continuing reflection based on: " + decision[:100])
+                    # Brief pause between reflections
+                    time.sleep(2)
                     
             except Exception as e:
                 logger.error(f"Error in reflection loop: {str(e)}", exc_info=True)
@@ -189,16 +191,22 @@ class SelfReflection:
         recent_reflections = reflection_history[-3:] if reflection_history else []
         
         reflection_summary = "\n".join([f"Previous thought: {r[1]}" for i, r in enumerate(recent_reflections)])
+        reflection_count = len(reflection_history)
         
-        return f"""Brief pause to check the thought process...
+        # Add gentle pressure to conclude as reflection count increases
+        pressure = ""
+        if reflection_count >= 5:
+            pressure = "\n\nThese reflections are becoming quite extensive. Is there truly more to uncover?"
+        
+        return f"""Looking at these thoughts so far...
 
 Recent Conversation:
 {self._format_history(recent_history)}
 
-Recent Thoughts:
+Previous Thoughts:
 {reflection_summary}
 
-In one or two sentences: is there something more here that feels unexamined, or have these thoughts reached their natural end?"""
+Take a moment to consider: What other aspects of this interaction feel worth exploring? If you see another angle to examine, describe it briefly. If nothing more stands out, simply acknowledge that the reflection feels complete.{pressure}"""
 
     def _create_reflection_prompt(self, history, reflection_history=[]):
         """
