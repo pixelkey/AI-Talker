@@ -167,8 +167,11 @@ def generate_local_response(input_text, context_documents, context, history):
     """
     Generate response using local model.
     """
+    # Get the appropriate system prompt
+    system_prompt = context.get('system_prompt', context['SYSTEM_PROMPT'])
+    
     # Build the prompt for the local model
-    prompt = build_local_prompt(context['SYSTEM_PROMPT'], history, context_documents, input_text)
+    prompt = build_local_prompt(system_prompt, history, context_documents, input_text)
 
     # Log the final prompt sent to the local LLM
     logging.info(f"Final prompt sent to local LLM:\n{prompt}")
