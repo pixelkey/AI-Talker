@@ -20,7 +20,7 @@ from vector_store_client import VectorStoreClient
 from document_processing import normalize_text
 import ollama
 import time
-from tts_utils import initialize_tts
+from tts_utils import TTSManager
 from embedding_updater import EmbeddingUpdater
 
 def setup_gradio_interface(context):
@@ -34,21 +34,11 @@ def setup_gradio_interface(context):
     print("\n=== Setting up Gradio interface ===")
     
     # Initialize TTS at startup
-    tts_context = initialize_tts()
-    if not tts_context:
+    tts_manager = TTSManager(context)
+    if not context.get('tts'):
         print("Failed to initialize TTS")
         return None
         
-    # Store TTS objects in context
-    context.update(tts_context)
-    print("TTS objects stored in context")
-    
-    # Verify context contents
-    print(f"Context contents after initialization:")
-    print(f"- TTS object: {type(context.get('tts'))}")
-    print(f"- Voice samples: {type(context.get('voice_samples'))}, length: {len(context.get('voice_samples'))}")
-    print(f"- Conditioning latents: {type(context.get('conditioning_latents'))}")
-
     # Initialize state
     state = {"last_processed_index": 0}
 
@@ -74,123 +64,6 @@ def setup_gradio_interface(context):
     # Create the watcher but don't start it yet - we'll manually trigger updates
     watcher = IngestWatcher(embedding_updater.update_embeddings)
     context['watcher'] = watcher
-
-    def text_to_speech(text):
-        """Convert text to speech using Tortoise TTS"""
-        print("\n=== Starting text_to_speech ===")
-        
-        if not text:
-            print("No text provided, returning None")
-            return None
-
-        # Get TTS instance from context
-        tts = context.get('tts')
-        voice_samples = context.get('voice_samples')
-        conditioning_latents = context.get('conditioning_latents')
-        
-        print(f"\nRetrieved from context:")
-        print(f"- TTS object: {type(tts) if tts else None}")
-        print(f"- Voice samples: {type(voice_samples) if voice_samples else None}, length: {len(voice_samples) if voice_samples else 0}")
-        print(f"- Conditioning latents: {type(conditioning_latents) if conditioning_latents else None}")
-        
-        if not tts or not voice_samples or not conditioning_latents:
-            print("TTS not properly initialized")
-            return None
-        
-        try:
-            print("Processing text chunks...")
-            # Split long text into smaller chunks at sentence boundaries
-            sentences = text.split('.')
-            max_chunk_length = 100  # Maximum characters per chunk
-            chunks = []
-            current_chunk = ""
-            
-            for sentence in sentences:
-                if len(current_chunk) + len(sentence) < max_chunk_length:
-                    current_chunk += sentence + "."
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sentence + "."
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            
-            print(f"Created {len(chunks)} chunks: {chunks}")
-            
-            # Process each chunk
-            all_audio = []
-            for i, chunk in enumerate(chunks, 1):
-                print(f"\nProcessing chunk {i}/{len(chunks)}: '{chunk}'")
-                if not chunk.strip():
-                    print(f"Skipping empty chunk {i}")
-                    continue
-                
-                print("Generating autoregressive samples...")
-                try:
-                    gen = tts.tts_with_preset(
-                        chunk,
-                        voice_samples=voice_samples,
-                        conditioning_latents=conditioning_latents,
-                        preset='ultra_fast',
-                        use_deterministic_seed=True,
-                        num_autoregressive_samples=1,
-                        diffusion_iterations=10,
-                        cond_free=True,
-                        cond_free_k=2.0,
-                        temperature=0.8
-                    )
-                    print(f"Generated audio for chunk {i}")
-                except RuntimeError as e:
-                    print(f"Error generating audio for chunk {i}: {e}")
-                    if "expected a non-empty list of Tensors" in str(e):
-                        print("Retrying with different configuration...")
-                        # Try again with modified settings
-                        gen = tts.tts_with_preset(
-                            chunk,
-                            voice_samples=voice_samples,
-                            conditioning_latents=conditioning_latents,
-                            preset='ultra_fast',
-                            use_deterministic_seed=True,
-                            num_autoregressive_samples=2,
-                            diffusion_iterations=10,
-                            cond_free=False,
-                            temperature=0.8
-                        )
-                        print("Retry successful")
-                    else:
-                        raise
-                
-                if isinstance(gen, tuple):
-                    gen = gen[0]
-                if len(gen.shape) == 3:
-                    gen = gen.squeeze(0)
-                
-                print(f"Audio shape for chunk {i}: {gen.shape}")
-                all_audio.append(gen)
-
-            # Combine all audio chunks
-            print("\nCombining audio chunks...")
-            if all_audio:
-                combined_audio = torch.cat(all_audio, dim=1)
-                print(f"Audio chunks combined successfully, final shape: {combined_audio.shape}")
-            else:
-                print("No audio generated")
-                return None
-
-            # Create a temporary file
-            print("Saving audio to file...")
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
-                temp_path = fp.name
-                torchaudio.save(temp_path, combined_audio.cpu(), 24000)
-                print(f"Audio saved to {temp_path}")
-                
-            return temp_path
-
-        except Exception as e:
-            print(f"Error in text-to-speech: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
 
     def transcribe_audio(audio_path):
         """Transcribe audio file to text"""
@@ -233,7 +106,7 @@ def setup_gradio_interface(context):
             
             # Generate speech for the response
             print("\nGenerating TTS response...")
-            audio_path = text_to_speech(response)
+            audio_path = tts_manager.text_to_speech(response)
             print("TTS generation complete")
             
             # Update embeddings in background
