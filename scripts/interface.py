@@ -21,6 +21,7 @@ from document_processing import normalize_text
 import ollama
 import time
 from tts_utils import initialize_tts
+from embedding_updater import EmbeddingUpdater
 
 def setup_gradio_interface(context):
     """
@@ -67,58 +68,242 @@ def setup_gradio_interface(context):
     if context.get('MODEL_SOURCE') == 'local':
         context['client'] = ollama
 
-    def update_embeddings(changed_files=None):
-        """Callback function to update embeddings when files change"""
-        try:
-            if changed_files:
-                logging.info(f"Processing changed files: {changed_files}")
-                for file_path in changed_files:
-                    if os.path.exists(file_path):
-                        # Load and chunk the changed file
-                        documents = context['loader'].load_documents([file_path])
-                        if documents:
-                            chunks = context['chunker'].split_documents(documents)
-                            # Update vector store with new chunks
-                            context['vector_store'].add_documents(chunks)
-                            logging.info(f"Updated embeddings for {len(chunks)} chunks")
-                            
-                # Save updated index and metadata
-                save_faiss_index_metadata_and_docstore(
-                    context['vector_store'].index,
-                    context['vector_store'].index_to_docstore_id,
-                    context['vector_store'].docstore,
-                    os.environ["FAISS_INDEX_PATH"],
-                    os.environ["METADATA_PATH"],
-                    os.environ["DOCSTORE_PATH"]
-                )
-                logging.info(f"Updated embeddings for {len(changed_files)} files")
-            else:
-                # Load all documents from ingest directory
-                logging.info("Loading all documents from /home/andrew/projects/app/python/talker/ingest")
-                documents = context['loader'].load()
-                if documents:
-                    chunks = context['chunker'].split_documents(documents)
-                    # Update vector store with all chunks
-                    context['vector_store'].add_documents(chunks)
-                    logging.info(f"Updated embeddings for {len(chunks)} chunks")
-                    # Save updated index and metadata
-                    save_faiss_index_metadata_and_docstore(
-                        context['vector_store'].index,
-                        context['vector_store'].index_to_docstore_id,
-                        context['vector_store'].docstore,
-                        os.environ["FAISS_INDEX_PATH"],
-                        os.environ["METADATA_PATH"],
-                        os.environ["DOCSTORE_PATH"]
-                    )
-                    logging.info("Updated embeddings from ingest directory")
-            
-        except Exception as e:
-            logging.error(f"Error updating embeddings: {str(e)}")
-
+    # Initialize embedding updater
+    embedding_updater = EmbeddingUpdater(context)
+    
     # Create the watcher but don't start it yet - we'll manually trigger updates
-    watcher = IngestWatcher(update_embeddings)
+    watcher = IngestWatcher(embedding_updater.update_embeddings)
     context['watcher'] = watcher
 
+    def text_to_speech(text):
+        """Convert text to speech using Tortoise TTS"""
+        print("\n=== Starting text_to_speech ===")
+        
+        if not text:
+            print("No text provided, returning None")
+            return None
+
+        # Get TTS instance from context
+        tts = context.get('tts')
+        voice_samples = context.get('voice_samples')
+        conditioning_latents = context.get('conditioning_latents')
+        
+        print(f"\nRetrieved from context:")
+        print(f"- TTS object: {type(tts) if tts else None}")
+        print(f"- Voice samples: {type(voice_samples) if voice_samples else None}, length: {len(voice_samples) if voice_samples else 0}")
+        print(f"- Conditioning latents: {type(conditioning_latents) if conditioning_latents else None}")
+        
+        if not tts or not voice_samples or not conditioning_latents:
+            print("TTS not properly initialized")
+            return None
+        
+        try:
+            print("Processing text chunks...")
+            # Split long text into smaller chunks at sentence boundaries
+            sentences = text.split('.')
+            max_chunk_length = 100  # Maximum characters per chunk
+            chunks = []
+            current_chunk = ""
+            
+            for sentence in sentences:
+                if len(current_chunk) + len(sentence) < max_chunk_length:
+                    current_chunk += sentence + "."
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence + "."
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            
+            print(f"Created {len(chunks)} chunks: {chunks}")
+            
+            # Process each chunk
+            all_audio = []
+            for i, chunk in enumerate(chunks, 1):
+                print(f"\nProcessing chunk {i}/{len(chunks)}: '{chunk}'")
+                if not chunk.strip():
+                    print(f"Skipping empty chunk {i}")
+                    continue
+                
+                print("Generating autoregressive samples...")
+                try:
+                    gen = tts.tts_with_preset(
+                        chunk,
+                        voice_samples=voice_samples,
+                        conditioning_latents=conditioning_latents,
+                        preset='ultra_fast',
+                        use_deterministic_seed=True,
+                        num_autoregressive_samples=1,
+                        diffusion_iterations=10,
+                        cond_free=True,
+                        cond_free_k=2.0,
+                        temperature=0.8
+                    )
+                    print(f"Generated audio for chunk {i}")
+                except RuntimeError as e:
+                    print(f"Error generating audio for chunk {i}: {e}")
+                    if "expected a non-empty list of Tensors" in str(e):
+                        print("Retrying with different configuration...")
+                        # Try again with modified settings
+                        gen = tts.tts_with_preset(
+                            chunk,
+                            voice_samples=voice_samples,
+                            conditioning_latents=conditioning_latents,
+                            preset='ultra_fast',
+                            use_deterministic_seed=True,
+                            num_autoregressive_samples=2,
+                            diffusion_iterations=10,
+                            cond_free=False,
+                            temperature=0.8
+                        )
+                        print("Retry successful")
+                    else:
+                        raise
+                
+                if isinstance(gen, tuple):
+                    gen = gen[0]
+                if len(gen.shape) == 3:
+                    gen = gen.squeeze(0)
+                
+                print(f"Audio shape for chunk {i}: {gen.shape}")
+                all_audio.append(gen)
+
+            # Combine all audio chunks
+            print("\nCombining audio chunks...")
+            if all_audio:
+                combined_audio = torch.cat(all_audio, dim=1)
+                print(f"Audio chunks combined successfully, final shape: {combined_audio.shape}")
+            else:
+                print("No audio generated")
+                return None
+
+            # Create a temporary file
+            print("Saving audio to file...")
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
+                temp_path = fp.name
+                torchaudio.save(temp_path, combined_audio.cpu(), 24000)
+                print(f"Audio saved to {temp_path}")
+                
+            return temp_path
+
+        except Exception as e:
+            print(f"Error in text-to-speech: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def transcribe_audio(audio_path):
+        """Transcribe audio file to text"""
+        if audio_path is None:
+            return "", "", None
+        
+        try:
+            # Initialize recognizer
+            recognizer = sr.Recognizer()
+            
+            # Use the audio file directly
+            with sr.AudioFile(audio_path) as source:
+                audio = recognizer.record(source)
+            
+            # Perform the recognition
+            text = recognizer.recognize_google(audio)
+            return text, text, f"Transcribed: {text}"
+        except Exception as e:
+            return "", "", f"Error transcribing audio: {str(e)}"
+
+    def handle_user_input(input_text, history):
+        """Handle user input and generate response with proper state management."""
+        try:
+            # Validate input
+            if not input_text or not input_text.strip():
+                return history, "", "", history, None, ""
+
+            # Get chat manager from context
+            chat_manager = context['chat_manager']
+
+            # Get references and generate response
+            refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
+            
+            # Generate the LLM response
+            _, response, _ = chatbot_response(input_text, context_documents, context, history)
+            
+            # Update history with the new user and bot messages
+            new_history = history + [(f"User: {input_text}", f"Bot: {response}")]
+            chat_manager.save_history(new_history)
+            
+            # Generate speech for the response
+            print("\nGenerating TTS response...")
+            audio_path = text_to_speech(response)
+            print("TTS generation complete")
+            
+            # Update embeddings in background
+            def update_chat_embeddings():
+                try:
+                    print("\nUpdating embeddings...")
+                    # Get new messages from the current history
+                    new_messages = history[state["last_processed_index"]:]
+                    if new_messages:
+                        chat_text = chat_manager.format_for_embedding(new_messages)
+                        vector_store = context['vector_store']
+                        vectors = context['embeddings'].embed_documents([chat_text])
+                        vectors = np.array(vectors, dtype="float32")
+                        faiss.normalize_L2(vectors)
+                        vector_store.index.add(vectors)
+                        
+                        chunk_id = str(len(vector_store.index_to_docstore_id))
+                        chunk = Document(
+                            page_content=chat_text,
+                            metadata={
+                                "id": chunk_id,
+                                "doc_id": "chat_history",
+                                "filename": os.path.basename(chat_manager.current_file),
+                                "filepath": "chat_history",
+                                "chunk_size": len(chat_text),
+                                "overlap_size": 0,
+                            },
+                        )
+                        vector_store.docstore._dict[chunk_id] = chunk
+                        vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
+                        state["last_processed_index"] = len(history)
+                        
+                        # Save the updated index
+                        save_faiss_index_metadata_and_docstore(
+                            vector_store.index,
+                            vector_store.index_to_docstore_id,
+                            vector_store.docstore,
+                            os.environ["FAISS_INDEX_PATH"],
+                            os.environ["METADATA_PATH"],
+                            os.environ["DOCSTORE_PATH"]
+                        )
+                        print("Embeddings update complete")
+                        
+                        # Process any pending file changes
+                        if hasattr(context['watcher'], 'pending_changes') and context['watcher'].pending_changes:
+                            pending = context['watcher'].pending_changes.copy()
+                            context['watcher'].pending_changes.clear()
+                            update_embeddings(pending)
+                except Exception as e:
+                    print(f"Error updating embeddings: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+
+            # Start background thread for embedding updates
+            import threading
+            threading.Thread(target=update_chat_embeddings, daemon=True).start()
+            
+            return history + [(f"User: {input_text}", f"Bot: {response}")], refs, "", history + [(f"User: {input_text}", f"Bot: {response}")], audio_path, "Processing complete"
+            
+        except Exception as e:
+            print(f"Error in handle_user_input: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return history, "", "", history, None, f"Error: {str(e)}"
+
+    def clear_interface(history):
+        cleared_history, cleared_refs, cleared_input = clear_history(context, history)
+        return [], cleared_refs, cleared_input, [], None, ""
+
+    # Setup event handlers with explicit state management
     with gr.Blocks(css=".separator { margin: 8px 0; border-bottom: 1px solid #ddd; }") as app:
         # Output fields
         chat_history = gr.Chatbot(label="Chat History", height=400)
@@ -147,235 +332,6 @@ def setup_gradio_interface(context):
         # Initialize session state separately for each user
         session_state = gr.State(value=[])
 
-        def text_to_speech(text):
-            """Convert text to speech using Tortoise TTS"""
-            print("\n=== Starting text_to_speech ===")
-            
-            if not text:
-                print("No text provided, returning None")
-                return None
-
-            # Get TTS instance from context
-            tts = context.get('tts')
-            voice_samples = context.get('voice_samples')
-            conditioning_latents = context.get('conditioning_latents')
-            
-            print(f"\nRetrieved from context:")
-            print(f"- TTS object: {type(tts) if tts else None}")
-            print(f"- Voice samples: {type(voice_samples) if voice_samples else None}, length: {len(voice_samples) if voice_samples else 0}")
-            print(f"- Conditioning latents: {type(conditioning_latents) if conditioning_latents else None}")
-            
-            if not tts or not voice_samples or not conditioning_latents:
-                print("TTS not properly initialized")
-                return None
-            
-            try:
-                print("Processing text chunks...")
-                # Split long text into smaller chunks at sentence boundaries
-                sentences = text.split('.')
-                max_chunk_length = 100  # Maximum characters per chunk
-                chunks = []
-                current_chunk = ""
-                
-                for sentence in sentences:
-                    if len(current_chunk) + len(sentence) < max_chunk_length:
-                        current_chunk += sentence + "."
-                    else:
-                        if current_chunk:
-                            chunks.append(current_chunk.strip())
-                        current_chunk = sentence + "."
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                
-                print(f"Created {len(chunks)} chunks: {chunks}")
-                
-                # Process each chunk
-                all_audio = []
-                for i, chunk in enumerate(chunks, 1):
-                    print(f"\nProcessing chunk {i}/{len(chunks)}: '{chunk}'")
-                    if not chunk.strip():
-                        print(f"Skipping empty chunk {i}")
-                        continue
-                    
-                    print("Generating autoregressive samples...")
-                    try:
-                        gen = tts.tts_with_preset(
-                            chunk,
-                            voice_samples=voice_samples,
-                            conditioning_latents=conditioning_latents,
-                            preset='ultra_fast',
-                            use_deterministic_seed=True,
-                            num_autoregressive_samples=1,
-                            diffusion_iterations=10,
-                            cond_free=True,
-                            cond_free_k=2.0,
-                            temperature=0.8
-                        )
-                        print(f"Generated audio for chunk {i}")
-                    except RuntimeError as e:
-                        print(f"Error generating audio for chunk {i}: {e}")
-                        if "expected a non-empty list of Tensors" in str(e):
-                            print("Retrying with different configuration...")
-                            # Try again with modified settings
-                            gen = tts.tts_with_preset(
-                                chunk,
-                                voice_samples=voice_samples,
-                                conditioning_latents=conditioning_latents,
-                                preset='ultra_fast',
-                                use_deterministic_seed=True,
-                                num_autoregressive_samples=2,
-                                diffusion_iterations=10,
-                                cond_free=False,
-                                temperature=0.8
-                            )
-                            print("Retry successful")
-                        else:
-                            raise
-                    
-                    if isinstance(gen, tuple):
-                        gen = gen[0]
-                    if len(gen.shape) == 3:
-                        gen = gen.squeeze(0)
-                    
-                    print(f"Audio shape for chunk {i}: {gen.shape}")
-                    all_audio.append(gen)
-
-                # Combine all audio chunks
-                print("\nCombining audio chunks...")
-                if all_audio:
-                    combined_audio = torch.cat(all_audio, dim=1)
-                    print(f"Audio chunks combined successfully, final shape: {combined_audio.shape}")
-                else:
-                    print("No audio generated")
-                    return None
-
-                # Create a temporary file
-                print("Saving audio to file...")
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
-                    temp_path = fp.name
-                    torchaudio.save(temp_path, combined_audio.cpu(), 24000)
-                    print(f"Audio saved to {temp_path}")
-                    
-                return temp_path
-
-            except Exception as e:
-                print(f"Error in text-to-speech: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                return None
-
-        def transcribe_audio(audio_path):
-            """Transcribe audio file to text"""
-            if audio_path is None:
-                return "", "", None
-            
-            try:
-                # Initialize recognizer
-                recognizer = sr.Recognizer()
-                
-                # Use the audio file directly
-                with sr.AudioFile(audio_path) as source:
-                    audio = recognizer.record(source)
-                
-                # Perform the recognition
-                text = recognizer.recognize_google(audio)
-                return text, text, f"Transcribed: {text}"
-            except Exception as e:
-                return "", "", f"Error transcribing audio: {str(e)}"
-
-        def handle_user_input(input_text, history):
-            """Handle user input and generate response with proper state management."""
-            try:
-                # Validate input
-                if not input_text or not input_text.strip():
-                    return history, "", "", history, None, ""
-
-                # Get chat manager from context
-                chat_manager = context['chat_manager']
-
-                # Get references and generate response
-                refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
-                
-                # Generate the LLM response
-                _, response, _ = chatbot_response(input_text, context_documents, context, history)
-                
-                # Update history with the new user and bot messages
-                new_history = history + [(f"User: {input_text}", f"Bot: {response}")]
-                chat_manager.save_history(new_history)
-                
-                # Generate speech for the response
-                print("\nGenerating TTS response...")
-                audio_path = text_to_speech(response)
-                print("TTS generation complete")
-                
-                # Update embeddings in background
-                def update_chat_embeddings():
-                    try:
-                        print("\nUpdating embeddings...")
-                        # Get new messages from the current history
-                        new_messages = history[state["last_processed_index"]:]
-                        if new_messages:
-                            chat_text = chat_manager.format_for_embedding(new_messages)
-                            vector_store = context['vector_store']
-                            vectors = context['embeddings'].embed_documents([chat_text])
-                            vectors = np.array(vectors, dtype="float32")
-                            faiss.normalize_L2(vectors)
-                            vector_store.index.add(vectors)
-                            
-                            chunk_id = str(len(vector_store.index_to_docstore_id))
-                            chunk = Document(
-                                page_content=chat_text,
-                                metadata={
-                                    "id": chunk_id,
-                                    "doc_id": "chat_history",
-                                    "filename": os.path.basename(chat_manager.current_file),
-                                    "filepath": "chat_history",
-                                    "chunk_size": len(chat_text),
-                                    "overlap_size": 0,
-                                },
-                            )
-                            vector_store.docstore._dict[chunk_id] = chunk
-                            vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
-                            state["last_processed_index"] = len(history)
-                            
-                            # Save the updated index
-                            save_faiss_index_metadata_and_docstore(
-                                vector_store.index,
-                                vector_store.index_to_docstore_id,
-                                vector_store.docstore,
-                                os.environ["FAISS_INDEX_PATH"],
-                                os.environ["METADATA_PATH"],
-                                os.environ["DOCSTORE_PATH"]
-                            )
-                            print("Embeddings update complete")
-                            
-                            # Process any pending file changes
-                            if hasattr(context['watcher'], 'pending_changes') and context['watcher'].pending_changes:
-                                pending = context['watcher'].pending_changes.copy()
-                                context['watcher'].pending_changes.clear()
-                                update_embeddings(pending)
-                    except Exception as e:
-                        print(f"Error updating embeddings: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-
-                # Start background thread for embedding updates
-                import threading
-                threading.Thread(target=update_chat_embeddings, daemon=True).start()
-                
-                return history + [(f"User: {input_text}", f"Bot: {response}")], refs, "", history + [(f"User: {input_text}", f"Bot: {response}")], audio_path, "Processing complete"
-                
-            except Exception as e:
-                print(f"Error in handle_user_input: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                return history, "", "", history, None, f"Error: {str(e)}"
-
-        def clear_interface(history):
-            cleared_history, cleared_refs, cleared_input = clear_history(context, history)
-            return [], cleared_refs, cleared_input, [], None, ""
-
-        # Setup event handlers with explicit state management
         submit_button.click(
             handle_user_input,
             inputs=[input_text, session_state],
