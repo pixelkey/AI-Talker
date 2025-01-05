@@ -237,59 +237,7 @@ def setup_gradio_interface(context):
             print("TTS generation complete")
             
             # Update embeddings in background
-            def update_chat_embeddings():
-                try:
-                    print("\nUpdating embeddings...")
-                    # Get new messages from the current history
-                    new_messages = history[state["last_processed_index"]:]
-                    if new_messages:
-                        chat_text = chat_manager.format_for_embedding(new_messages)
-                        vector_store = context['vector_store']
-                        vectors = context['embeddings'].embed_documents([chat_text])
-                        vectors = np.array(vectors, dtype="float32")
-                        faiss.normalize_L2(vectors)
-                        vector_store.index.add(vectors)
-                        
-                        chunk_id = str(len(vector_store.index_to_docstore_id))
-                        chunk = Document(
-                            page_content=chat_text,
-                            metadata={
-                                "id": chunk_id,
-                                "doc_id": "chat_history",
-                                "filename": os.path.basename(chat_manager.current_file),
-                                "filepath": "chat_history",
-                                "chunk_size": len(chat_text),
-                                "overlap_size": 0,
-                            },
-                        )
-                        vector_store.docstore._dict[chunk_id] = chunk
-                        vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
-                        state["last_processed_index"] = len(history)
-                        
-                        # Save the updated index
-                        save_faiss_index_metadata_and_docstore(
-                            vector_store.index,
-                            vector_store.index_to_docstore_id,
-                            vector_store.docstore,
-                            os.environ["FAISS_INDEX_PATH"],
-                            os.environ["METADATA_PATH"],
-                            os.environ["DOCSTORE_PATH"]
-                        )
-                        print("Embeddings update complete")
-                        
-                        # Process any pending file changes
-                        if hasattr(context['watcher'], 'pending_changes') and context['watcher'].pending_changes:
-                            pending = context['watcher'].pending_changes.copy()
-                            context['watcher'].pending_changes.clear()
-                            update_embeddings(pending)
-                except Exception as e:
-                    print(f"Error updating embeddings: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-
-            # Start background thread for embedding updates
-            import threading
-            threading.Thread(target=update_chat_embeddings, daemon=True).start()
+            embedding_updater.update_chat_embeddings_async(history, state)
             
             return history + [(f"User: {input_text}", f"Bot: {response}")], refs, "", history + [(f"User: {input_text}", f"Bot: {response}")], audio_path, "Processing complete"
             
