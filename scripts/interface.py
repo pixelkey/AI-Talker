@@ -5,13 +5,8 @@ from chatbot_functions import chatbot_response, clear_history, retrieve_and_form
 from chat_history import ChatHistoryManager
 from ingest_watcher import IngestWatcher
 from faiss_utils import save_faiss_index_metadata_and_docstore
-import numpy as np
-import io
-import tempfile
 import os
 import logging
-import faiss
-from langchain.docstore.document import Document
 from vector_store_client import VectorStoreClient
 from document_processing import normalize_text
 import ollama
