@@ -1,3 +1,5 @@
+# scripts/chat_history.py
+
 import os
 from datetime import datetime
 import json
@@ -38,33 +40,14 @@ class ChatHistoryManager:
             with open(self.current_file, 'w', encoding='utf-8') as f:
                 json.dump(formatted_history, f, ensure_ascii=False, indent=2)
 
-    def load_history(self):
-        """Load chat history from the current file"""
-        if os.path.exists(self.current_file):
-            with open(self.current_file, 'r', encoding='utf-8') as f:
-                formatted_history = json.load(f)
-                history = []
-                for msg_pair in formatted_history:
-                    user_msg = msg_pair["user"].replace("user: ", "", 1) if msg_pair["user"] else ""
-                    assistant_msg = msg_pair["assistant"].replace("assistant: ", "", 1) if msg_pair["assistant"] else ""
-                    history.append((user_msg, assistant_msg))
-                return history
-        return []
-
-    def get_new_messages(self, last_processed_index=0):
-        """Get messages that haven't been processed for embeddings yet"""
-        history = self.load_history()
-        new_messages = history[last_processed_index:]
-        return new_messages, len(history)
-
     def format_for_embedding(self, messages):
         """Format messages for embedding, excluding references"""
         formatted_texts = []
         for user_msg, assistant_msg in messages:
             if user_msg:
-                formatted_texts.append(f"User: {user_msg}")
+                formatted_texts.append(user_msg)
             if assistant_msg:
                 # Remove reference sections if they exist
                 response = assistant_msg.split("References:", 1)[0].strip()
-                formatted_texts.append(f"Assistant: {response}")
+                formatted_texts.append(response)
         return "\n".join(formatted_texts)

@@ -32,7 +32,7 @@ def initialize_tts():
             "kv_cache": True,
             "half": True,
             "device": "cuda" if torch.cuda.is_available() else "cpu",
-            "autoregressive_batch_size": 1, # larger GPU memory usage if set more than 1
+            "autoregressive_batch_size": 1,  # larger GPU memory usage if set more than 1
             "use_deepspeed": True
         }
         print(f"Initializing TTS with config: {tts_config}")
@@ -43,17 +43,17 @@ def initialize_tts():
         torch.manual_seed(42)
         if torch.cuda.is_available():
             torch.cuda.manual_seed(42)
-        
+
         # Get voice from config
         voice_name = os.getenv('TTS_VOICE', 'emma')
         print(f"Loading voice samples for {voice_name}...")
         voice_samples = load_voice(voice_name, extra_voice_dirs=[])[0]
         print(f"Voice samples loaded: {len(voice_samples)} samples")
-        
+
         print("Computing conditioning latents...")
         gen_conditioning_latents = tts.get_conditioning_latents(voice_samples)
         print("Conditioning latents generated")
-        
+
         return {
             'tts': tts,
             'voice_samples': voice_samples,
@@ -121,6 +121,10 @@ def setup_gradio_interface(context):
 
     # Initialize state
     state = {"last_processed_index": 0}
+
+    # Initialize chat manager once at startup
+    chat_manager = ChatHistoryManager()
+    context['chat_manager'] = chat_manager
 
     # Initialize vector store client and LLM client
     vector_store_client = VectorStoreClient(
@@ -346,8 +350,9 @@ def setup_gradio_interface(context):
                 
                 # Perform the recognition
                 text = recognizer.recognize_google(audio)
-                # Return text and trigger submit
-                return text, text, True, f"Transcribed: {text}"
+                # Return text and trigger submit if you want auto-submission
+                # For now, just fill the box and let the user press Submit/Enter:
+                return text, text, False, f"Transcribed: {text}"
             except Exception as e:
                 return "", "", False, f"Error transcribing audio: {str(e)}"
 
@@ -358,25 +363,18 @@ def setup_gradio_interface(context):
                 if not input_text or not input_text.strip():
                     return history, "", "", history, None, ""
 
-                # Create or get chat manager
-                if not history:
-                    chat_manager = ChatHistoryManager()
-                    context['chat_manager'] = chat_manager
-                else:
-                    chat_manager = context.get('chat_manager')
+                # Get chat manager from context
+                chat_manager = context['chat_manager']
 
                 # Get references and generate response
                 refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
                 
-                # Initialize history if needed
-                history = history or []
-                
                 # Generate the LLM response
                 _, response, _ = chatbot_response(input_text, context_documents, context, history)
                 
-                # Update history with the complete interaction
-                history.append((input_text, response))
-                chat_manager.save_history(history)
+                # Update history with the new user and bot messages
+                new_history = history + [(f"User: {input_text}", f"Bot: {response}")]
+                chat_manager.save_history(new_history)
                 
                 # Generate speech for the response
                 print("\nGenerating TTS response...")
@@ -387,7 +385,8 @@ def setup_gradio_interface(context):
                 def update_chat_embeddings():
                     try:
                         print("\nUpdating embeddings...")
-                        new_messages, new_last_index = chat_manager.get_new_messages(state["last_processed_index"])
+                        # Get new messages from the current history
+                        new_messages = history[state["last_processed_index"]:]
                         if new_messages:
                             chat_text = chat_manager.format_for_embedding(new_messages)
                             vector_store = context['vector_store']
@@ -410,7 +409,7 @@ def setup_gradio_interface(context):
                             )
                             vector_store.docstore._dict[chunk_id] = chunk
                             vector_store.index_to_docstore_id[len(vector_store.index_to_docstore_id)] = chunk_id
-                            state["last_processed_index"] = new_last_index
+                            state["last_processed_index"] = len(history)
                             
                             # Save the updated index
                             save_faiss_index_metadata_and_docstore(
@@ -437,7 +436,7 @@ def setup_gradio_interface(context):
                 import threading
                 threading.Thread(target=update_chat_embeddings, daemon=True).start()
                 
-                return history, refs, "", history, audio_path, "Processing complete"
+                return history + [(f"User: {input_text}", f"Bot: {response}")], refs, "", history + [(f"User: {input_text}", f"Bot: {response}")], audio_path, "Processing complete"
                 
             except Exception as e:
                 print(f"Error in handle_user_input: {str(e)}")
@@ -453,40 +452,51 @@ def setup_gradio_interface(context):
         submit_button.click(
             handle_user_input,
             inputs=[input_text, session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output, gr.Textbox(visible=False)],  # Add status output
+            outputs=[
+                chat_history,     # updated chat history 
+                references,       # references
+                input_text,       # clear or reset user input
+                session_state,    # updated session state
+                audio_output,     # audio file path
+                gr.Textbox(visible=False)  # status or debug
+            ],
         ).success(
             lambda: None,
             None,
             audio_input
         )
         
-        # Add audio completion handler to start recording
-        audio_output.stop(
-            lambda: None,
-            None,
-            audio_input
-        )
-
-        # Add audio input handler with auto-submit
+        # Stop automatically chaining handle_user_input after transcribe_audio.
+        # Let the user press Submit (or Enter) to invoke handle_user_input *once*.
         audio_input.change(
             transcribe_audio,
             inputs=[audio_input],
             outputs=[
-                input_text,  # Update the input text
-                gr.Textbox(visible=False),  # Temporary storage
-                gr.Checkbox(visible=False),  # Trigger for submit
+                input_text,           # recognized text
+                gr.Textbox(visible=False),
+                gr.Checkbox(visible=False),
             ],
-        ).then(
-            handle_user_input,  # Chain to handle_user_input
-            inputs=[input_text, session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output],
         )
-
-        # Add text input submission via Enter key
+        
+        # Add text input submission via Enter key with the same outputs as submit button
         input_text.submit(
             handle_user_input,
             inputs=[input_text, session_state],
-            outputs=[chat_history, references, input_text, session_state, audio_output],
+            outputs=[
+                chat_history,     # updated chat history 
+                references,       # references
+                input_text,       # clear or reset user input
+                session_state,    # updated session state
+                audio_output,     # audio file path
+                gr.Textbox(visible=False)  # status or debug
+            ]
+        )
+        
+        # Clear button
+        clear_button.click(
+            clear_interface,
+            inputs=[session_state],
+            outputs=[chat_history, references, input_text, session_state, audio_output, gr.Textbox(visible=False)]
         )
 
     return app

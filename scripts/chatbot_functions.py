@@ -42,23 +42,13 @@ def chatbot_response(input_text, context_documents, context, history):
     Returns:
         Tuple: Updated chat history, LLM response, and cleared input.
     """
-    # Ensure that history is treated as a list
-    if not isinstance(history, list):
-        history = []
-
     # Generate the response based on the model source
     response_text = generate_response(input_text, context_documents, context, history)
     if response_text is None:
-        return "\n".join([f"{u}\n{b}" for u, b in history]), "Error generating response.", ""
+        return history, "Error generating response.", ""
 
-    # Append the new user input and response to the history as a tuple
-    history.append((f"User: {input_text}", f"Bot: {response_text}"))
-
-    # Format the history with horizontal line separators for better readability
-    formatted_history = "\n---\n".join([f"{u}\n{b}" for u, b in history])
-
-    # Return the formatted chat history, the latest response, and a cleared input field
-    return formatted_history, response_text, ""
+    # Return the history unchanged, the response, and a cleared input field
+    return history, response_text, ""
 
 def retrieve_relevant_documents(normalized_input, context):
     """
