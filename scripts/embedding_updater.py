@@ -18,7 +18,6 @@ class EmbeddingUpdater:
         """
         self.context = context
         self.update_thread = None
-        self.reflection_thread = None
 
     def update_embeddings(self, changed_files=None):
         """

@@ -59,7 +59,7 @@ def setup_gradio_interface(context):
     embedding_updater = EmbeddingUpdater(context)
     context['embedding_updater'] = embedding_updater
     
-    # Initialize self reflection after embedding updater is in context
+    # Initialize self reflection
     self_reflection = SelfReflection(context)
     
     # Create the watcher but don't start it yet - we'll manually trigger updates
