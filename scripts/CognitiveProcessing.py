@@ -1,12 +1,50 @@
 import logging
 from typing import List, Dict, Any, Optional
 from langchain.docstore.document import Document
+import config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max_length: int = 1000) -> str:
+def generate_llm_summary(content: str, context: Dict[str, Any]) -> str:
+    """
+    Generate a concise summary of the content using the LLM.
+    """
+    try:
+        if config.MODEL_SOURCE == "openai":
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that creates concise summaries while preserving key information. Focus on maintaining important context and details."},
+                {"role": "user", "content": f"Please provide a concise summary of the following content, preserving the most relevant information:\n\n{content}"}
+            ]
+            
+            response = context["client"].chat.completions.create(
+                model=context["LLM_MODEL"],
+                messages=messages,
+                max_tokens=min(context["LLM_MAX_TOKENS"] - len(context["encoding"].encode(str(messages))), 1000),
+            )
+            return response.choices[0].message.content
+            
+        elif config.MODEL_SOURCE == "local":
+            prompt = f"""You are a helpful assistant that creates concise summaries while preserving key information. Focus on maintaining important context and details.
+
+Please provide a concise summary of the following content, preserving the most relevant information:
+
+{content}
+
+Summary:"""
+            
+            response = context["client"].generate(
+                model=context["LLM_MODEL"],
+                prompt=prompt,
+            )
+            return response['response']
+            
+    except Exception as e:
+        logger.error(f"Error generating LLM summary: {str(e)}")
+        return content
+
+def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max_length: int = 1000, context: Optional[Dict[str, Any]] = None) -> str:
     """
     Summarize RAG retrieval results only if they exceed the maximum length.
     Otherwise, return the original content as is.
@@ -14,6 +52,7 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
     Args:
         context_documents (Optional[List[Dict[str, Any]]]): List of retrieved documents from RAG
         max_length (int): Maximum length of the summarized context in characters
+        context (Optional[Dict[str, Any]]): Context containing LLM client and settings
         
     Returns:
         str: Original or summarized context suitable for LLM input
@@ -54,7 +93,14 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
         if total_length <= max_length:
             return "\n\n".join(all_content)
             
-        # Otherwise, perform summarization
+        # If content exceeds max length and we have context, use LLM to generate summary
+        if context:
+            combined_content = "\n\n".join(all_content)
+            logger.info(f"Content exceeded max length ({total_length} > {max_length}). Generating LLM summary...")
+            return generate_llm_summary(combined_content, context)
+            
+        # Fallback to simple truncation if no context provided
+        logger.warning("No context provided for LLM summary. Falling back to simple truncation.")
         summarized_context = []
         current_length = 0
         
@@ -76,7 +122,7 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
         # Join all summarized content
         final_summary = "\n\n".join(summarized_context)
         
-        logger.info(f"Content exceeded max length ({total_length} > {max_length}). Summarized to {len(final_summary)} characters")
+        logger.info(f"Content exceeded max length ({total_length} > {max_length}). Truncated to {len(final_summary)} characters")
         return final_summary
         
     except Exception as e:

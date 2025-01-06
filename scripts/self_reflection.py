@@ -74,7 +74,7 @@ class SelfReflection:
                     reflection_prompt = self._create_reflection_prompt(current_exchange, reflection_history)
                     
                     # Get and filter references
-                    refs, filtered_docs, context_documents = retrieve_and_format_references(reflection_prompt, self.context)
+                    refs, filtered_docs, context_documents = retrieve_and_format_references(reflection_prompt, self.context, summarize=False)
                     current_conversation_refs = self._filter_references(refs, current_exchange)
                     
                     _, reflection, _ = chatbot_response(reflection_prompt, current_conversation_refs, temp_context, current_exchange)
@@ -266,7 +266,7 @@ Format your response as a structured framework with:
 Your framework should be original and tailored to this specific interaction, not a generic template."""
 
         # Get the dynamic framework from the LLM
-        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt_generator, self.context)
+        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt_generator, self.context, summarize=False)
         temp_context = self.context.copy()
         temp_context['system_prompt'] = "You are a psychological framework designer, creating introspection frameworks based on established psychological principles."
         _, generated_framework, _ = chatbot_response(meta_prompt_generator, context_documents, temp_context, history)
@@ -314,7 +314,7 @@ Guidelines for your analysis:
 Previously explored dimensions: {', '.join(previous_dimensions) if previous_dimensions else 'None'}"""
 
         # Get the dynamic prompt from the LLM
-        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context)
+        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context, summarize=False)
         current_conversation_refs = self._filter_references(refs, history)
         
         temp_context = self.context.copy()

@@ -6,12 +6,13 @@ from document_processing import normalize_text
 from CognitiveProcessing import summarize_rag_results
 import config
 
-def retrieve_and_format_references(input_text, context):
+def retrieve_and_format_references(input_text, context, summarize=True):
     """
     Retrieve relevant documents and format references.
     Args:
         input_text (str): The user's input.
         context (dict): Context containing client, memory, and other settings.
+        summarize (bool): Whether to apply summarization to the results
     Returns:
         Tuple: references, filtered_docs, and context_documents.
     """
@@ -25,10 +26,10 @@ def retrieve_and_format_references(input_text, context):
         return "", None, None
 
     # Construct the references
-    references = build_references(filtered_docs)
+    references = build_references(filtered_docs, context if summarize else None)
 
     # Build the context documents for LLM prompt
-    context_documents = build_context_documents(filtered_docs)
+    context_documents = build_context_documents(filtered_docs, context if summarize else None)
 
     return references, filtered_docs, context_documents
 
@@ -92,7 +93,7 @@ def retrieve_relevant_documents(normalized_input, context):
 
     return filtered_docs
 
-def build_context_documents(filtered_docs):
+def build_context_documents(filtered_docs, context=None):
     """
     Combine content from filtered documents to form the context documents.
     """
@@ -109,9 +110,9 @@ def build_context_documents(filtered_docs):
     ]
     
     # Summarize the formatted documents
-    return summarize_rag_results(formatted_docs)
+    return summarize_rag_results(formatted_docs, context=context)
 
-def build_references(filtered_docs):
+def build_references(filtered_docs, context=None):
     """
     Construct the reference list from filtered documents.
     """
@@ -128,7 +129,7 @@ def build_references(filtered_docs):
     ]
     
     # Summarize the formatted references
-    summary = summarize_rag_results(formatted_docs, max_length=500)  # Using shorter length for references display
+    summary = summarize_rag_results(formatted_docs, max_length=500, context=context)  # Using shorter length for references display
     return f"References:\n{summary}" if summary else ""
 
 def generate_response(input_text, context_documents, context, history):
