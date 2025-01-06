@@ -6,6 +6,8 @@ import json
 from queue import Queue
 from chatbot_functions import retrieve_and_format_references, chatbot_response
 import gradio as gr
+from typing import Optional, Dict, Any, List, Tuple
+from gpu_utils import is_gpu_too_hot
 from self_reflection_history import SelfReflectionHistoryManager
 
 # Configure logging
@@ -76,7 +78,7 @@ class SelfReflection:
                 
                 while not self.stop_reflection.is_set() and reflection_count < MAX_REFLECTIONS:
                     # Check GPU temperature before proceeding
-                    if self.is_gpu_too_hot():
+                    if is_gpu_too_hot():
                         logger.warning("GPU temperature too high, skipping reflection")
                         break
 
@@ -438,27 +440,3 @@ Previously explored: {', '.join(previous_aspects) if previous_aspects else 'None
                 current_conversation_refs.append(ref)
         
         return current_conversation_refs if current_conversation_refs else refs
-
-    def get_gpu_temperature(self):
-        try:
-            # Try to get GPU temperature using nvidia-smi
-            result = subprocess.run([
-                'nvidia-smi', 
-                '--query-gpu=temperature.gpu', 
-                '--format=csv,noheader,nounits'
-            ], capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                temp = float(result.stdout.strip())
-                return temp
-            return None
-        except (subprocess.SubprocessError, FileNotFoundError, ValueError):
-            return None
-
-    def is_gpu_too_hot(self, max_temp=75):  # 75°C is a reasonable threshold
-        temp = self.get_gpu_temperature()
-        if temp is not None:
-            logger.info(f"Current GPU temperature: {temp}°C (threshold: {max_temp}°C)")
-            return temp > max_temp
-        logger.warning("Could not get GPU temperature")
-        return False  # If we can't get temperature, assume it's safe to continue
