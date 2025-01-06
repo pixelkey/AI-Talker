@@ -22,13 +22,13 @@ class SelfReflection:
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
         self.reflection_system_prompt = (
-            "You are engaged in private self-reflection, similar to writing quick thoughts in a journal. Express your thoughts "
-            "naturally and concisely while following these guidelines:\n\n"
-            "1. Keep reflections brief - capture the essence in 1-2 sentences\n"
-            "2. Focus on one key insight or realization at a time\n"
-            "3. Be direct and specific about what you've noticed\n"
-            "4. Stay internal - don't address others or ask questions\n"
-            "5. Be honest about limitations and growth\n\n"
+            "You are engaged in sophisticated psychological self-reflection, analyzing interactions through established psychological frameworks. "
+            "Express your insights clearly and thoughtfully while following these guidelines:\n\n"
+            "1. Focus on one psychological dimension at a time (Metacognitive Awareness, Emotional Intelligence, Cognitive Processing, etc.)\n"
+            "2. Analyze underlying patterns and mechanisms rather than surface observations\n"
+            "3. Connect insights to specific elements of the interaction\n"
+            "4. Maintain a growth-oriented, constructive perspective\n"
+            "5. Format your response with the psychological dimension as a header (e.g., **[Emotional Intelligence]**)\n\n"
         )
         logger.info("SelfReflection initialized")
 
@@ -95,7 +95,7 @@ class SelfReflection:
                         reflection,
                         context={
                             "references": current_conversation_refs,
-                            "prompt": f"Quick reflection on this recent interaction...\n\n{current_conversation}\n\n{reflection}",
+                            "prompt": reflection_prompt,  # Use the actual psychological reflection prompt
                             "reflection_number": reflection_count + 1
                         }
                     )
@@ -289,15 +289,68 @@ Generate a focused, introspective prompt that:
         refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context)
         current_conversation_refs = self._filter_references(refs, history)
         
+        # Track which psychological dimensions have been explored
+        previous_dimensions = [r[1].split('\n')[0].strip() for r in reflection_history if r[1].startswith('**')]
+        available_dimensions = [
+            "Metacognitive Awareness",
+            "Emotional Intelligence",
+            "Cognitive Processing",
+            "Learning and Adaptation",
+            "Behavioral Patterns"
+        ]
+        # Prioritize unused dimensions
+        unused_dimensions = [d for d in available_dimensions if not any(d in p for p in previous_dimensions)]
+        
         temp_context = self.context.copy()
-        temp_context['system_prompt'] = self.reflection_system_prompt
+        enhanced_system_prompt = f"""You are engaged in sophisticated psychological self-reflection, analyzing interactions through established psychological frameworks.
+Your task is to generate a specific, focused prompt that deeply examines ONE of these psychological dimensions:
+
+{', '.join(unused_dimensions) if unused_dimensions else ', '.join(available_dimensions)}
+
+For the chosen dimension, consider:
+1. How does this dimension specifically manifest in the current interaction?
+2. What underlying psychological patterns or mechanisms are at play?
+3. How does this analysis contribute to understanding and improving future interactions?
+
+Guidelines for prompt generation:
+1. Start your response with "**[Chosen Dimension]**:" to clearly indicate which aspect you're analyzing
+2. Focus deeply on the specific psychological mechanisms and patterns within that dimension
+3. Avoid surface-level observations - analyze the underlying psychological processes
+4. Connect your analysis to concrete elements of the interaction
+5. Maintain a constructive, growth-oriented perspective
+
+Current reflection number: {reflection_count + 1}
+Previous dimensions explored: {', '.join(previous_dimensions) if previous_dimensions else 'None'}"""
+
+        temp_context['system_prompt'] = enhanced_system_prompt
         _, generated_prompt, _ = chatbot_response(meta_cognitive_framework, current_conversation_refs, temp_context, history)
         
-        return f"""Psychological reflection on this interaction...
+        # Log everything for quality monitoring
+        logger.info("\n=== LLM Generated Reflection Prompt ===")
+        logger.info(f"Reflection #{reflection_count + 1}")
+        logger.info("Available Dimensions:")
+        logger.info(f"Unused: {unused_dimensions}")
+        logger.info(f"Previously Used: {previous_dimensions}")
+        logger.info("\nMeta-cognitive Framework:")
+        logger.info(meta_cognitive_framework)
+        logger.info("\nEnhanced System Prompt:")
+        logger.info(enhanced_system_prompt)
+        logger.info("\nGenerated Prompt:")
+        logger.info(generated_prompt)
+        logger.info("=====================================\n")
+        
+        # Extract the psychological dimension from the generated prompt
+        dimension = "Psychological Analysis"
+        if "**" in generated_prompt:
+            dimension = generated_prompt.split("**")[1].strip("[]")
+        
+        final_prompt = f"""Psychological reflection through the lens of {dimension}...
 
 {self._format_history(recent_history)}
 
 {generated_prompt}"""
+
+        return final_prompt
 
     def _format_history(self, history):
         """Format chat history into a readable string."""
