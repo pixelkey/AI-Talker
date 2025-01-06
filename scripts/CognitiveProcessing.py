@@ -94,6 +94,8 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
         if total_length <= max_length:
             return "\n\n".join(all_content)
             
+        logger.info(f"Content exceeded max length ({total_length} > {max_length})")
+            
         # Check GPU temperature before using LLM for summarization
         if is_gpu_too_hot():
             logger.warning("GPU temperature too high, falling back to simple truncation")
@@ -102,7 +104,7 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
         # If content exceeds max length and we have context, use LLM to generate summary
         if context:
             combined_content = "\n\n".join(all_content)
-            logger.info(f"Content exceeded max length ({total_length} > {max_length}). Generating LLM summary...")
+            logger.info("Generating LLM summary...")
             return generate_llm_summary(combined_content, context)
             
         # Fallback to simple truncation if no context provided
