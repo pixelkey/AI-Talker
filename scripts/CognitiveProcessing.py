@@ -15,8 +15,8 @@ def generate_llm_summary(content: str, context: Dict[str, Any]) -> str:
     try:
         if config.MODEL_SOURCE == "openai":
             messages = [
-                {"role": "system", "content": "You are a helpful assistant that creates concise summaries while preserving key information. Focus on maintaining important context and details."},
-                {"role": "user", "content": f"Please provide a concise summary of the following content, preserving the most relevant information:\n\n{content}"}
+                {"role": "system", "content": "You are a helpful assistant that creates concise summaries while preserving key information. When summarizing, clearly separate and label content from 'Internal Reflections' and 'Previous Conversations' if both are present. If only one type is present, label it appropriately."},
+                {"role": "user", "content": f"Please provide a concise summary of the following content. If the content contains both internal reflections and previous conversations, separate and label them clearly:\n\n{content}"}
             ]
             
             response = context["client"].chat.completions.create(
@@ -27,9 +27,9 @@ def generate_llm_summary(content: str, context: Dict[str, Any]) -> str:
             return response.choices[0].message.content
             
         elif config.MODEL_SOURCE == "local":
-            prompt = f"""You are a helpful assistant that creates concise summaries while preserving key information. Focus on maintaining important context and details.
+            prompt = f"""You are a helpful assistant that creates concise summaries while preserving key information. When summarizing, clearly separate and label content from 'Internal Reflections' and 'Previous Conversations' if both are present. If only one type is present, label it appropriately.
 
-Please provide a concise summary of the following content, preserving the most relevant information:
+Please provide a concise summary of the following content. If the content contains both internal reflections and previous conversations, separate and label them clearly:
 
 {content}
 
