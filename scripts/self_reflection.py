@@ -1,6 +1,8 @@
 import threading
 import time
 import logging
+import subprocess
+import json
 from queue import Queue
 from chatbot_functions import retrieve_and_format_references, chatbot_response
 import gradio as gr
@@ -73,6 +75,11 @@ class SelfReflection:
                 MAX_REFLECTIONS = 3 # Set the maximum number of reflections
                 
                 while not self.stop_reflection.is_set() and reflection_count < MAX_REFLECTIONS:
+                    # Check GPU temperature before proceeding
+                    if self.is_gpu_too_hot():
+                        logger.warning("GPU temperature too high, skipping reflection")
+                        break
+
                     if not self.user_input_queue.empty():
                         logger.info("User input detected, stopping reflection")
                         break
@@ -431,3 +438,27 @@ Previously explored: {', '.join(previous_aspects) if previous_aspects else 'None
                 current_conversation_refs.append(ref)
         
         return current_conversation_refs if current_conversation_refs else refs
+
+    def get_gpu_temperature(self):
+        try:
+            # Try to get GPU temperature using nvidia-smi
+            result = subprocess.run([
+                'nvidia-smi', 
+                '--query-gpu=temperature.gpu', 
+                '--format=csv,noheader,nounits'
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                temp = float(result.stdout.strip())
+                return temp
+            return None
+        except (subprocess.SubprocessError, FileNotFoundError, ValueError):
+            return None
+
+    def is_gpu_too_hot(self, max_temp=75):  # 75°C is a reasonable threshold
+        temp = self.get_gpu_temperature()
+        if temp is not None:
+            logger.info(f"Current GPU temperature: {temp}°C (threshold: {max_temp}°C)")
+            return temp > max_temp
+        logger.warning("Could not get GPU temperature")
+        return False  # If we can't get temperature, assume it's safe to continue
