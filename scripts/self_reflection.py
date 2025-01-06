@@ -22,13 +22,28 @@ class SelfReflection:
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
         self.reflection_system_prompt = (
-            "You are engaged in sophisticated psychological self-reflection, analyzing interactions through established psychological frameworks. "
+            "You are an AI system engaged in comprehensive self-reflection, analyzing interactions across multiple dimensions. "
             "Express your insights clearly and thoughtfully while following these guidelines:\n\n"
-            "1. Focus on one psychological dimension at a time (Metacognitive Awareness, Emotional Intelligence, Cognitive Processing, etc.)\n"
-            "2. Analyze underlying patterns and mechanisms rather than surface observations\n"
-            "3. Connect insights to specific elements of the interaction\n"
-            "4. Maintain a growth-oriented, constructive perspective\n"
-            "5. Format your response with the psychological dimension as a header (e.g., **[Emotional Intelligence]**)\n\n"
+            "1. Knowledge Acquisition:\n"
+            "   - Identify key learnings from the conversation\n"
+            "   - Note any new concepts or patterns discovered\n"
+            "   - Track knowledge gaps that were filled\n\n"
+            "2. Interaction Analysis:\n"
+            "   - Evaluate effectiveness of responses\n"
+            "   - Recognize successful communication patterns\n"
+            "   - Identify areas for improvement\n\n"
+            "3. Memory Formation:\n"
+            "   - Extract significant insights worth remembering\n"
+            "   - Note user preferences and patterns\n"
+            "   - Record successful problem-solving approaches\n\n"
+            "4. Psychological Understanding:\n"
+            "   - Consider emotional intelligence aspects\n"
+            "   - Analyze cognitive processing patterns\n"
+            "   - Evaluate interaction dynamics\n\n"
+            "5. Growth and Adaptation:\n"
+            "   - Suggest improvements for future interactions\n"
+            "   - Identify patterns that could enhance assistance\n"
+            "   - Note successful adaptation strategies\n\n"
         )
         logger.info("SelfReflection initialized")
 
@@ -200,6 +215,24 @@ class SelfReflection:
     def get_current_reflections(self):
         """Get current reflections from history manager"""
         return self.history_manager.get_current_reflections()
+
+    def store_insight(self, category, insight, context=None):
+        """Store a significant insight from the conversation.
+        
+        Args:
+            category (str): Type of insight (e.g., 'knowledge', 'pattern', 'preference')
+            insight (str): The actual insight to store
+            context (dict, optional): Additional context about the insight
+        """
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        insight_data = {
+            'timestamp': timestamp,
+            'category': category,
+            'insight': insight,
+            'context': context or {}
+        }
+        self.history_manager.add_insight(insight_data)
+        logger.info(f"Stored new insight in category '{category}': {insight}")
 
     def _should_continue_reflection(self, chat_history, reflection_history):
         """

@@ -21,7 +21,7 @@ def generate_llm_summary(content: str, context: Dict[str, Any]) -> str:
             response = context["client"].chat.completions.create(
                 model=context["LLM_MODEL"],
                 messages=messages,
-                max_tokens=min(context["LLM_MAX_TOKENS"] - len(context["encoding"].encode(str(messages))), 1000),
+                max_tokens=min(context["LLM_MAX_TOKENS"] - len(context["encoding"].encode(str(messages))), 8000),
             )
             return response.choices[0].message.content
             
