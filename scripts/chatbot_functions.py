@@ -129,7 +129,7 @@ def build_references(filtered_docs, context=None):
     ]
     
     # Summarize the formatted references
-    summary = summarize_rag_results(formatted_docs, max_length=500, context=context)  # Using shorter length for references display
+    summary = summarize_rag_results(formatted_docs, max_length=5000, context=context)  # Using shorter length for references display
     return f"References:\n{summary}" if summary else ""
 
 def generate_response(input_text, context_documents, context, history):
