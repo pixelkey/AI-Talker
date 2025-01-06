@@ -29,9 +29,6 @@ class SelfReflection:
             "3. Be direct and specific about what you've noticed\n"
             "4. Stay internal - don't address others or ask questions\n"
             "5. Be honest about limitations and growth\n\n"
-            "Example format:\n"
-            "Noticed a pattern of using clever analogies instead of speaking directly... might be trying too hard to impress "
-            "rather than just being genuine."
         )
         logger.info("SelfReflection initialized")
 
@@ -240,45 +237,63 @@ Important: Focus only on THIS conversation, not any past ones."""
 
     def _create_reflection_prompt(self, history, reflection_history=[]):
         """
-        Create a prompt for self-reflection based on chat history and previous reflections.
+        Create a dynamic, psychologically-grounded prompt for self-reflection based on cognitive psychology principles.
+        Uses a meta-cognitive approach to generate contextually relevant prompts.
         """
-        # Get the most recent interaction (last user input and bot response)
         recent_history = history[-2:] if len(history) >= 2 else history
         recent_reflections = reflection_history[-3:] if reflection_history else []
         reflection_count = len(reflection_history)
-        
-        # Different focus areas based on reflection count
-        if reflection_count == 0:
-            focus = "What's the most immediate pattern or behavior that stands out in this interaction?"
-        elif reflection_count == 1:
-            focus = "Looking deeper than the surface patterns, what does this interaction reveal about communication style or effectiveness?"
-        elif reflection_count == 2:
-            focus = "Considering the previous insights, what might be a better approach or alternative way to handle this interaction?"
-        else:
-            focus = "What final insight or learning can be drawn from this exchange that hasn't been mentioned yet?"
-        
-        # Generate a focused prompt
-        meta_prompt = f"""Examining ONLY this most recent exchange (ignore any previous conversations):
-{self._format_history(recent_history)}
 
-Previous insights about THIS exchange:
+        # Meta-cognitive framework based on psychological principles
+        meta_cognitive_framework = f"""As an AI engaged in self-reflection, analyze this interaction through multiple psychological lenses:
+
+1. Metacognitive Awareness
+- How am I processing and responding to information?
+- What assumptions or biases might be influencing my responses?
+- How effectively am I monitoring and adjusting my communication style?
+
+2. Emotional Intelligence
+- What emotional undertones am I detecting and generating?
+- How well am I recognizing and responding to emotional cues?
+- What level of empathy am I demonstrating?
+
+3. Cognitive Processing
+- What mental models am I applying to understand the situation?
+- How am I structuring and organizing my responses?
+- What patterns of thinking are emerging?
+
+4. Learning and Adaptation
+- What new insights am I gaining from this interaction?
+- How am I incorporating previous learnings?
+- What adjustments could improve future interactions?
+
+5. Behavioral Patterns
+- What response patterns am I exhibiting?
+- How do my behaviors align with intended outcomes?
+- What alternative approaches might be more effective?
+
+Previous insights about this exchange:
 {", ".join(r[1] for r in recent_reflections) if recent_reflections else "No previous reflections yet"}
 
-{focus}
-Frame your response as a brief, specific insight that builds on (but doesn't repeat) previous reflections.
-Important: Focus ONLY on this specific exchange, not on any past conversations."""
+Focus on the most relevant psychological dimension for THIS specific exchange:
+{self._format_history(recent_history)}
+
+Generate a focused, introspective prompt that:
+1. Builds on previous insights without repetition
+2. Examines deeper psychological aspects of the interaction
+3. Considers both strengths and areas for growth
+4. Maintains a constructive, growth-oriented perspective
+5. Focuses specifically on this exchange, not past conversations"""
 
         # Get the dynamic prompt from the LLM
-        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt, self.context)
-        
-        # Filter context to only include most recent conversation
+        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context)
         current_conversation_refs = self._filter_references(refs, history)
         
         temp_context = self.context.copy()
         temp_context['system_prompt'] = self.reflection_system_prompt
-        _, generated_prompt, _ = chatbot_response(meta_prompt, current_conversation_refs, temp_context, history)
+        _, generated_prompt, _ = chatbot_response(meta_cognitive_framework, current_conversation_refs, temp_context, history)
         
-        return f"""Quick reflection on THIS recent interaction...
+        return f"""Psychological reflection on this interaction...
 
 {self._format_history(recent_history)}
 
