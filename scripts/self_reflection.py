@@ -58,7 +58,7 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 reflection_history = []
-                MAX_REFLECTIONS = 7
+                MAX_REFLECTIONS = 3
                 
                 while not self.stop_reflection.is_set() and reflection_count < MAX_REFLECTIONS:
                     if not self.user_input_queue.empty():
