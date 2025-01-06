@@ -3,6 +3,7 @@
 import logging
 from faiss_utils import similarity_search_with_score
 from document_processing import normalize_text
+from CognitiveProcessing import summarize_rag_results
 import config
 
 def retrieve_and_format_references(input_text, context):
@@ -95,25 +96,40 @@ def build_context_documents(filtered_docs):
     """
     Combine content from filtered documents to form the context documents.
     """
-    context_documents = "\n\n".join(
-        [
-            f"{idx+1}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}\n{doc['content']}"
-            for idx, doc in enumerate(filtered_docs)
-        ]
-    )
-    return context_documents
+    if not filtered_docs:
+        return ""
+        
+    # Format documents with metadata
+    formatted_docs = [
+        {
+            'content': f"{idx+1}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}\n{doc['content']}",
+            'score': doc.get('score', 0)
+        }
+        for idx, doc in enumerate(filtered_docs)
+    ]
+    
+    # Summarize the formatted documents
+    return summarize_rag_results(formatted_docs)
 
 def build_references(filtered_docs):
     """
     Construct the reference list from filtered documents.
     """
-    references = "References:\n" + "\n".join(
-        [
-            f"[Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']}: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}]\n{doc['content']}\n"
-            for doc in filtered_docs
-        ]
-    )
-    return references
+    if not filtered_docs:
+        return ""
+        
+    # Format documents with metadata
+    formatted_docs = [
+        {
+            'content': f"[Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']}: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}]\n{doc['content']}",
+            'score': doc.get('score', 0)
+        }
+        for idx, doc in enumerate(filtered_docs)
+    ]
+    
+    # Summarize the formatted references
+    summary = summarize_rag_results(formatted_docs, max_length=500)  # Using shorter length for references display
+    return f"References:\n{summary}" if summary else ""
 
 def generate_response(input_text, context_documents, context, history):
     """
