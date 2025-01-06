@@ -235,106 +235,99 @@ Current Insights:
 Is there a different angle or deeper level of understanding we haven't explored about THIS specific interaction?
 Important: Focus only on THIS conversation, not any past ones."""
 
+    def _generate_meta_prompt(self, history, reflection_history=[]):
+        """
+        Generate a dynamic meta-prompt based on psychological principles and current context.
+        This allows the LLM to create its own introspection framework.
+        """
+        recent_history = history[-2:] if len(history) >= 2 else history
+        reflection_count = len(reflection_history)
+        
+        meta_prompt_generator = f"""As an AI engaged in psychological self-reflection, create a framework for analyzing the following interaction:
+
+{self._format_history(recent_history)}
+
+Previous reflections:
+{', '.join(r[1] for r in reflection_history[-2:]) if reflection_history else 'None'}
+
+Create a psychological introspection framework that:
+1. Identifies key psychological dimensions relevant to this specific interaction
+2. Proposes novel angles for self-analysis
+3. Draws from established psychological theories and principles
+4. Encourages deep, systematic analysis
+5. Maintains focus on growth and improvement
+
+Format your response as a structured framework with:
+1. Key psychological dimensions to explore
+2. Specific questions or prompts for each dimension
+3. Theoretical foundations or principles being applied
+4. Suggested areas for growth or adaptation
+
+Your framework should be original and tailored to this specific interaction, not a generic template."""
+
+        # Get the dynamic framework from the LLM
+        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt_generator, self.context)
+        temp_context = self.context.copy()
+        temp_context['system_prompt'] = "You are a psychological framework designer, creating introspection frameworks based on established psychological principles."
+        _, generated_framework, _ = chatbot_response(meta_prompt_generator, context_documents, temp_context, history)
+        
+        logger.info("\n=== Generated Meta-Framework ===")
+        logger.info(generated_framework)
+        logger.info("================================\n")
+        
+        return generated_framework
+
     def _create_reflection_prompt(self, history, reflection_history=[]):
         """
         Create a dynamic, psychologically-grounded prompt for self-reflection based on cognitive psychology principles.
         Uses a meta-cognitive approach to generate contextually relevant prompts.
         """
+        # First, generate a dynamic framework
+        psychological_framework = self._generate_meta_prompt(history, reflection_history)
+        
         recent_history = history[-2:] if len(history) >= 2 else history
         recent_reflections = reflection_history[-3:] if reflection_history else []
         reflection_count = len(reflection_history)
+        
+        # Track which psychological dimensions have been explored
+        previous_dimensions = [r[1].split('\n')[0].strip() for r in reflection_history if r[1].startswith('**')]
+        
+        meta_cognitive_framework = f"""Using this psychological framework:
 
-        # Meta-cognitive framework based on psychological principles
-        meta_cognitive_framework = f"""As an AI engaged in self-reflection, analyze this interaction through multiple psychological lenses:
+{psychological_framework}
 
-1. Metacognitive Awareness
-- How am I processing and responding to information?
-- What assumptions or biases might be influencing my responses?
-- How effectively am I monitoring and adjusting my communication style?
+Analyze the following interaction through ONE unexplored psychological dimension:
 
-2. Emotional Intelligence
-- What emotional undertones am I detecting and generating?
-- How well am I recognizing and responding to emotional cues?
-- What level of empathy am I demonstrating?
-
-3. Cognitive Processing
-- What mental models am I applying to understand the situation?
-- How am I structuring and organizing my responses?
-- What patterns of thinking are emerging?
-
-4. Learning and Adaptation
-- What new insights am I gaining from this interaction?
-- How am I incorporating previous learnings?
-- What adjustments could improve future interactions?
-
-5. Behavioral Patterns
-- What response patterns am I exhibiting?
-- How do my behaviors align with intended outcomes?
-- What alternative approaches might be more effective?
+Recent Exchange:
+{self._format_history(recent_history)}
 
 Previous insights about this exchange:
 {", ".join(r[1] for r in recent_reflections) if recent_reflections else "No previous reflections yet"}
 
-Focus on the most relevant psychological dimension for THIS specific exchange:
-{self._format_history(recent_history)}
+Guidelines for your analysis:
+1. Choose ONE psychological dimension from the framework that hasn't been explored
+2. Start your response with "**[Chosen Dimension]**:"
+3. Apply the specific questions/prompts from the framework
+4. Connect your analysis to concrete elements of the interaction
+5. Maintain a constructive, growth-oriented perspective
 
-Generate a focused, introspective prompt that:
-1. Builds on previous insights without repetition
-2. Examines deeper psychological aspects of the interaction
-3. Considers both strengths and areas for growth
-4. Maintains a constructive, growth-oriented perspective
-5. Focuses specifically on this exchange, not past conversations"""
+Previously explored dimensions: {', '.join(previous_dimensions) if previous_dimensions else 'None'}"""
 
         # Get the dynamic prompt from the LLM
         refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context)
         current_conversation_refs = self._filter_references(refs, history)
         
-        # Track which psychological dimensions have been explored
-        previous_dimensions = [r[1].split('\n')[0].strip() for r in reflection_history if r[1].startswith('**')]
-        available_dimensions = [
-            "Metacognitive Awareness",
-            "Emotional Intelligence",
-            "Cognitive Processing",
-            "Learning and Adaptation",
-            "Behavioral Patterns"
-        ]
-        # Prioritize unused dimensions
-        unused_dimensions = [d for d in available_dimensions if not any(d in p for p in previous_dimensions)]
-        
         temp_context = self.context.copy()
-        enhanced_system_prompt = f"""You are engaged in sophisticated psychological self-reflection, analyzing interactions through established psychological frameworks.
-Your task is to generate a specific, focused prompt that deeply examines ONE of these psychological dimensions:
-
-{', '.join(unused_dimensions) if unused_dimensions else ', '.join(available_dimensions)}
-
-For the chosen dimension, consider:
-1. How does this dimension specifically manifest in the current interaction?
-2. What underlying psychological patterns or mechanisms are at play?
-3. How does this analysis contribute to understanding and improving future interactions?
-
-Guidelines for prompt generation:
-1. Start your response with "**[Chosen Dimension]**:" to clearly indicate which aspect you're analyzing
-2. Focus deeply on the specific psychological mechanisms and patterns within that dimension
-3. Avoid surface-level observations - analyze the underlying psychological processes
-4. Connect your analysis to concrete elements of the interaction
-5. Maintain a constructive, growth-oriented perspective
-
-Current reflection number: {reflection_count + 1}
-Previous dimensions explored: {', '.join(previous_dimensions) if previous_dimensions else 'None'}"""
-
-        temp_context['system_prompt'] = enhanced_system_prompt
+        temp_context['system_prompt'] = self.reflection_system_prompt
         _, generated_prompt, _ = chatbot_response(meta_cognitive_framework, current_conversation_refs, temp_context, history)
         
         # Log everything for quality monitoring
         logger.info("\n=== LLM Generated Reflection Prompt ===")
         logger.info(f"Reflection #{reflection_count + 1}")
-        logger.info("Available Dimensions:")
-        logger.info(f"Unused: {unused_dimensions}")
-        logger.info(f"Previously Used: {previous_dimensions}")
-        logger.info("\nMeta-cognitive Framework:")
-        logger.info(meta_cognitive_framework)
-        logger.info("\nEnhanced System Prompt:")
-        logger.info(enhanced_system_prompt)
+        logger.info("Previously Explored Dimensions:")
+        logger.info(previous_dimensions)
+        logger.info("\nPsychological Framework:")
+        logger.info(psychological_framework)
         logger.info("\nGenerated Prompt:")
         logger.info(generated_prompt)
         logger.info("=====================================\n")
