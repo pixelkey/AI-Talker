@@ -74,8 +74,8 @@ def setup_gradio_interface(context):
             
             # Validate input
             if not input_text or not input_text.strip():
-                return history, "", "", history, None, "", gr.update(value="")
-
+                return history, "", "", history, None
+                
             # Get chat manager from context
             chat_manager = context['chat_manager']
 
@@ -97,47 +97,27 @@ def setup_gradio_interface(context):
             # Update embeddings in background
             context['embedding_updater'].update_chat_embeddings_async(history, state)
             
-            # Start self-reflection after response
-            print("\nStarting self-reflection...")
-            
-            # Create a queue for reflection updates
-            reflection_queue = Queue()
-            
-            def update_ui_with_reflection(reflection_text):
-                print(f"Queuing reflection update: {reflection_text[:100]}...")
-                reflection_queue.put(reflection_text)
-                return gr.update(value=reflection_text)
-            
-            self_reflection.start_reflection(new_history, update_ui_with_reflection)
-            
-            # Function to check reflection queue
-            def check_reflection_queue():
-                if not reflection_queue.empty():
-                    reflection_text = reflection_queue.get()
-                    return gr.update(value=reflection_text)
-                return gr.update(value="Waiting for reflection...")
-            
             return (
-                new_history,  # chatbot
-                refs,         # references
+                new_history,  # history
+                refs,        # references
                 "",          # input_text
                 new_history, # session_state
-                audio_path,  # audio_output
-                "",         # status
-                check_reflection_queue()  # reflection_box
+                audio_path   # audio_output
             )
             
         except Exception as e:
             print(f"Error in handle_user_input: {str(e)}")
             import traceback
             traceback.print_exc()
-            return history, "", "", history, None, f"Error: {str(e)}", gr.update(value="Error during reflection")
+            return history, "", "", history, None
 
     def clear_interface(history):
         # Stop any ongoing reflection when clearing
-        self_reflection.stop_reflection_loop()
+        if self_reflection:
+            self_reflection.stop_reflection()
+            
         cleared_history, cleared_refs, cleared_input = clear_history(context, history)
-        return [], cleared_refs, cleared_input, [], None, "", gr.update(value="")
+        return [], cleared_refs, cleared_input, [], None
 
     # Create Gradio interface
     with gr.Blocks() as interface:
@@ -165,25 +145,7 @@ def setup_gradio_interface(context):
                         )
                     with gr.Column(scale=2, min_width=0):
                         submit_text = gr.Button("Submit")
-                status = gr.Textbox(
-                    show_label=False,
-                    placeholder="Status will appear here...",
-                    lines=1
-                )
             with gr.Column(scale=2):
-                reflection_box = gr.Textbox(
-                    label="Self-Reflection",
-                    placeholder="Agent's self-reflections will appear here...",
-                    lines=10,
-                    max_lines=20,
-                    interactive=False,
-                    every=1  # Update every second
-                )
-                audio_status = gr.Textbox(
-                    show_label=False,
-                    placeholder="Audio status will appear here...",
-                    lines=1
-                )
                 audio_input = gr.Audio(
                     sources=["microphone"],
                     type="filepath",
@@ -205,9 +167,7 @@ def setup_gradio_interface(context):
                 references,
                 input_text,
                 gr.State(value=[]),
-                audio_output,
-                status,
-                reflection_box
+                audio_output
             ],
             queue=True  # Enable queueing for updates
         ).success(
@@ -225,9 +185,7 @@ def setup_gradio_interface(context):
                 references,
                 input_text,
                 gr.State(value=[]),
-                audio_output,
-                status,
-                reflection_box
+                audio_output
             ],
             queue=True  # Enable queueing for updates
         )
@@ -238,8 +196,7 @@ def setup_gradio_interface(context):
             inputs=[audio_input],
             outputs=[
                 input_text,
-                submit_text,
-                audio_status
+                submit_text
             ],
             queue=False
         ).success(
@@ -250,9 +207,7 @@ def setup_gradio_interface(context):
                 references,
                 input_text,
                 gr.State(value=[]),
-                audio_output,
-                status,
-                reflection_box
+                audio_output
             ],
             queue=True  # Enable queueing for updates
         )
@@ -266,9 +221,7 @@ def setup_gradio_interface(context):
                 references,
                 input_text,
                 gr.State(value=[]),
-                audio_output,
-                status,
-                reflection_box
+                audio_output
             ],
             queue=False
         )
