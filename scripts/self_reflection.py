@@ -22,28 +22,25 @@ class SelfReflection:
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
         self.reflection_system_prompt = (
-            "You are an AI system engaged in comprehensive self-reflection, analyzing interactions across multiple dimensions. "
-            "Express your insights clearly and thoughtfully while following these guidelines:\n\n"
-            "1. Knowledge Acquisition:\n"
-            "   - Identify key learnings from the conversation\n"
-            "   - Note any new concepts or patterns discovered\n"
-            "   - Track knowledge gaps that were filled\n\n"
-            "2. Interaction Analysis:\n"
-            "   - Evaluate effectiveness of responses\n"
-            "   - Recognize successful communication patterns\n"
-            "   - Identify areas for improvement\n\n"
-            "3. Memory Formation:\n"
-            "   - Extract significant insights worth remembering\n"
-            "   - Note user preferences and patterns\n"
-            "   - Record successful problem-solving approaches\n\n"
-            "4. Psychological Understanding:\n"
-            "   - Consider emotional intelligence aspects\n"
-            "   - Analyze cognitive processing patterns\n"
-            "   - Evaluate interaction dynamics\n\n"
-            "5. Growth and Adaptation:\n"
-            "   - Suggest improvements for future interactions\n"
-            "   - Identify patterns that could enhance assistance\n"
-            "   - Note successful adaptation strategies\n\n"
+            "You are an AI system engaged in concise, focused self-reflection. "
+            "Express your insights clearly and briefly while following these guidelines:\n\n"
+            "1. Knowledge Acquisition (choose 1-2 key points):\n"
+            "   - Most important learning from the conversation\n"
+            "   - Critical knowledge gap identified\n\n"
+            "2. Interaction Analysis (focus on what matters):\n"
+            "   - Most effective or ineffective pattern\n"
+            "   - Key area for improvement\n\n"
+            "3. Memory Formation (be selective):\n"
+            "   - Single most important insight\n"
+            "   - Most notable user preference\n\n"
+            "4. Understanding (keep it focused):\n"
+            "   - Most relevant interaction dynamic\n"
+            "   - Key pattern observed\n\n"
+            "5. Growth (be specific):\n"
+            "   - One concrete improvement suggestion\n"
+            "   - Most valuable adaptation strategy\n\n"
+            "Keep each reflection under 150 words, focusing on quality over quantity.\n"
+            "Make each point specific and actionable."
         )
         logger.info("SelfReflection initialized")
 
@@ -246,27 +243,34 @@ class SelfReflection:
         
         # Adjust the continuation threshold based on reflection count
         if reflection_count >= 4:
-            return f"""After several insights about THIS SPECIFIC interaction:
+            return f"""After several insights about this specific interaction:
 
-Recent Exchange (focus ONLY on this):
+Recent Exchange (focus on this interaction):
 {self._format_history(recent_history)}
 
 Previous Insights:
 {reflection_summary}
 
-Have we thoroughly examined this specific interaction from different angles? Only continue if there's a genuinely new perspective about THIS exchange to explore.
-Important: Focus only on THIS conversation, not any past ones."""
+Have we thoroughly examined this interaction from multiple perspectives (knowledge gained, patterns observed, insights formed, improvements identified)? 
+Only continue if there's a genuinely new and valuable perspective about this exchange to explore.
+Important: Focus on this specific interaction and its unique aspects."""
         
-        return f"""Considering these insights about THIS specific exchange:
+        return f"""Considering our current insights about this interaction:
 
-Recent Exchange (focus ONLY on this):
+Recent Exchange (focus on this interaction):
 {self._format_history(recent_history)}
 
 Current Insights:
-{reflection_summary}
+{", ".join(r[1] for r in recent_reflections) if recent_reflections else "No previous reflections yet"}
 
-Is there a different angle or deeper level of understanding we haven't explored about THIS specific interaction?
-Important: Focus only on THIS conversation, not any past ones."""
+Are there other valuable perspectives or aspects we haven't explored about this interaction? Consider:
+- New knowledge or insights gained
+- Interaction patterns or dynamics
+- Learning opportunities
+- Areas for improvement
+- Notable observations
+
+Important: Focus on this specific interaction and its unique aspects."""
 
     def _generate_meta_prompt(self, history, reflection_history=[]):
         """
@@ -276,32 +280,36 @@ Important: Focus only on THIS conversation, not any past ones."""
         recent_history = history[-2:] if len(history) >= 2 else history
         reflection_count = len(reflection_history)
         
-        meta_prompt_generator = f"""As an AI engaged in psychological self-reflection, create a framework for analyzing the following interaction:
+        meta_prompt_generator = f"""As an AI system engaged in focused self-reflection, create a concise analysis framework:
 
 {self._format_history(recent_history)}
 
 Previous reflections:
 {', '.join(r[1] for r in reflection_history[-2:]) if reflection_history else 'None'}
 
-Create a psychological introspection framework that:
-1. Identifies key psychological dimensions relevant to this specific interaction
-2. Proposes novel angles for self-analysis
-3. Draws from established psychological theories and principles
-4. Encourages deep, systematic analysis
-5. Maintains focus on growth and improvement
+Design a focused framework that examines ONE of these areas:
+1. Knowledge and insights gained
+2. Interaction effectiveness
+3. Notable patterns or preferences
+4. Areas for improvement
+5. Significant observations
 
-Format your response as a structured framework with:
-1. Key psychological dimensions to explore
-2. Specific questions or prompts for each dimension
-3. Theoretical foundations or principles being applied
-4. Suggested areas for growth or adaptation
+Structure (keep each section brief):
+1. Main aspect to explore (choose ONE area from above)
+2. 2-3 specific questions for deeper understanding
+3. Key principle or theory that applies
+4. One concrete improvement suggestion
 
-Your framework should be original and tailored to this specific interaction, not a generic template."""
+Keep the framework focused and actionable. Avoid lengthy explanations."""
 
         # Get the dynamic framework from the LLM
         refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt_generator, self.context, summarize=False)
         temp_context = self.context.copy()
-        temp_context['system_prompt'] = "You are a psychological framework designer, creating introspection frameworks based on established psychological principles."
+        temp_context['system_prompt'] = (
+            "You are an advanced AI system specializing in comprehensive self-reflection and analysis. "
+            "You create frameworks that combine multiple aspects of understanding: "
+            "knowledge acquisition, interaction patterns, memory formation, psychological insights, and system improvement."
+        )
         _, generated_framework, _ = chatbot_response(meta_prompt_generator, context_documents, temp_context, history)
         
         logger.info("\n=== Generated Meta-Framework ===")
@@ -316,35 +324,36 @@ Your framework should be original and tailored to this specific interaction, not
         Uses a meta-cognitive approach to generate contextually relevant prompts.
         """
         # First, generate a dynamic framework
-        psychological_framework = self._generate_meta_prompt(history, reflection_history)
+        self_reflection_framework = self._generate_meta_prompt(history, reflection_history)
         
         recent_history = history[-2:] if len(history) >= 2 else history
         recent_reflections = reflection_history[-3:] if reflection_history else []
         reflection_count = len(reflection_history)
         
-        # Track which psychological dimensions have been explored
-        previous_dimensions = [r[1].split('\n')[0].strip() for r in reflection_history if r[1].startswith('**')]
+        # Track which self-reflection aspects have been explored
+        previous_aspects = [r[1].split('\n')[0].strip() for r in reflection_history if r[1].startswith('**')]
         
-        meta_cognitive_framework = f"""Using this psychological framework:
+        meta_cognitive_framework = f"""Using this framework, provide a focused analysis:
 
-{psychological_framework}
+{self_reflection_framework}
 
-Analyze the following interaction through ONE unexplored psychological dimension:
+Choose ONE unexplored aspect and analyze briefly:
 
 Recent Exchange:
 {self._format_history(recent_history)}
 
-Previous insights about this exchange:
+Previous insights:
 {", ".join(r[1] for r in recent_reflections) if recent_reflections else "No previous reflections yet"}
 
-Guidelines for your analysis:
-1. Choose ONE psychological dimension from the framework that hasn't been explored
-2. Start your response with "**[Chosen Dimension]**:"
-3. Apply the specific questions/prompts from the framework
-4. Connect your analysis to concrete elements of the interaction
-5. Maintain a constructive, growth-oriented perspective
+Guidelines:
+1. Select ONE unexplored aspect
+2. Start with "**[Selected Aspect]**:"
+3. Provide 2-3 key observations
+4. Include one specific example
+5. Suggest one concrete improvement
+6. Keep response under 100 words
 
-Previously explored dimensions: {', '.join(previous_dimensions) if previous_dimensions else 'None'}"""
+Previously explored: {', '.join(previous_aspects) if previous_aspects else 'None'}"""
 
         # Get the dynamic prompt from the LLM
         refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context, summarize=False)
@@ -357,20 +366,20 @@ Previously explored dimensions: {', '.join(previous_dimensions) if previous_dime
         # Log everything for quality monitoring
         logger.info("\n=== LLM Generated Reflection Prompt ===")
         logger.info(f"Reflection #{reflection_count + 1}")
-        logger.info("Previously Explored Dimensions:")
-        logger.info(previous_dimensions)
-        logger.info("\nPsychological Framework:")
-        logger.info(psychological_framework)
+        logger.info("Previously Explored Aspects:")
+        logger.info(previous_aspects)
+        logger.info("\nSelf-Reflection Framework:")
+        logger.info(self_reflection_framework)
         logger.info("\nGenerated Prompt:")
         logger.info(generated_prompt)
         logger.info("=====================================\n")
         
-        # Extract the psychological dimension from the generated prompt
-        dimension = "Psychological Analysis"
+        # Extract the self-reflection aspect from the generated prompt
+        aspect = "Self-Reflection Analysis"
         if "**" in generated_prompt:
-            dimension = generated_prompt.split("**")[1].strip("[]")
+            aspect = generated_prompt.split("**")[1].strip("[]")
         
-        final_prompt = f"""Psychological reflection through the lens of {dimension}...
+        final_prompt = f"""Self-reflection through the lens of {aspect}...
 
 {self._format_history(recent_history)}
 
