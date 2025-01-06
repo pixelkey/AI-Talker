@@ -192,7 +192,8 @@ def setup_gradio_interface(context):
                 )
                 audio_output = gr.Audio(
                     label="Response",
-                    show_label=True
+                    show_label=True,
+                    autoplay=True
                 )
                 
         # Set up event handlers
