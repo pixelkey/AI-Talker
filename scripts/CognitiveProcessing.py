@@ -345,7 +345,7 @@ Respond with ONLY the optimized search query. Examples:
                 logging.info(f"Summarized web search results: {result['web_results']}")
             else:
                 logging.warning("No valid search results found")
-                result["web_results"] = "I apologize, but I couldn't find any relevant search results for your query."
+                result["web_results"] = "No search results."
         else:
             logging.info("Web search not needed based on LLM decision")
         
