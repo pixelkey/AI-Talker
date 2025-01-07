@@ -127,35 +127,41 @@ def setup_gradio_interface(context):
                 chatbot = gr.Chatbot(
                     [],
                     elem_id="chatbot",
-                    height=400,
                     show_label=False,
                     layout="bubble"
-                )
-                references = gr.Textbox(
-                    show_label=False,
-                    placeholder="References will appear here...",
-                    lines=4
-                )
-                with gr.Row():
-                    with gr.Column(scale=8):
-                        input_text = gr.Textbox(
-                            show_label=False,
-                            placeholder="Enter text and press enter, or use the microphone...",
-                            lines=1
-                        )
-                    with gr.Column(scale=2, min_width=0):
-                        submit_text = gr.Button("Submit")
-            with gr.Column(scale=2):
-                audio_input = gr.Audio(
-                    sources=["microphone"],
-                    type="filepath",
-                    label="Speak",
-                    show_label=True
                 )
                 audio_output = gr.Audio(
                     label="Response",
                     show_label=True,
                     autoplay=True
+                )
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=6):
+                        input_text = gr.Textbox(
+                            show_label=False,
+                            placeholder="Enter text and press enter, or use the microphone...",
+                            lines=2,  # Increased to better match audio input height
+                            scale=1,  # Make it fill the available vertical space
+                        )
+                    with gr.Column(scale=4, min_width=0):
+                        with gr.Group():
+                            audio_input = gr.Audio(
+                                sources=["microphone"],
+                                type="filepath",
+                                label="Speak",
+                                show_label=True,
+                                scale=1,  # Make it fill the available vertical space
+                            )
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        submit_text = gr.Button("Submit", variant="primary", size="lg")
+                    with gr.Column(scale=1):
+                        clear_btn = gr.Button("Clear", variant="secondary", size="lg")
+            with gr.Column(scale=2):
+                references = gr.Textbox(
+                    show_label=False,
+                    placeholder="References will appear here...",
+                    lines=25
                 )
                 
         # Set up event handlers
@@ -169,7 +175,7 @@ def setup_gradio_interface(context):
                 gr.State(value=[]),
                 audio_output
             ],
-            queue=True  # Enable queueing for updates
+            queue=True
         ).success(
             lambda: gr.update(interactive=True),
             None,
@@ -187,7 +193,7 @@ def setup_gradio_interface(context):
                 gr.State(value=[]),
                 audio_output
             ],
-            queue=True  # Enable queueing for updates
+            queue=True
         )
         
         # Audio input with auto-submit
@@ -209,10 +215,9 @@ def setup_gradio_interface(context):
                 gr.State(value=[]),
                 audio_output
             ],
-            queue=True  # Enable queueing for updates
+            queue=True
         )
         
-        clear_btn = gr.Button("Clear")
         clear_btn.click(
             clear_interface,
             inputs=[chatbot],
