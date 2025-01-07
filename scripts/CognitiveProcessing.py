@@ -39,11 +39,11 @@ Please provide a concise summary of the following content. If the content contai
 
 Summary:"""
             
-            response = context["client"].generate(
+            response = context["client"].chat(
                 model=context["LLM_MODEL"],
-                prompt=prompt,
+                messages=[{"role": "user", "content": prompt}],
             )
-            return response['response']
+            return response['message']['content']
             
     except Exception as e:
         logger.error(f"Error generating LLM summary: {str(e)}")
@@ -195,11 +195,11 @@ RAG Summary: {rag_summary}
 
 Analyze if this query needs a web search. Respond with 'false' or provide an optimized search query:"""
             
-            response = context["client"].generate(
+            response = context["client"].chat(
                 model=context["LLM_MODEL"],
-                prompt=prompt,
+                messages=[{"role": "user", "content": prompt}],
             )
-            llm_response = response['response'].strip()
+            llm_response = response['message']['content'].strip()
         
         # Check if search is needed and get optimized query
         needs_search = llm_response.lower() != "false"
