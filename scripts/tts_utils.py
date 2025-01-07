@@ -107,10 +107,10 @@ class TTSManager:
                         preset='ultra_fast',
                         use_deterministic_seed=True,
                         num_autoregressive_samples=1,
-                        diffusion_iterations=10,
+                        diffusion_iterations=15,
                         cond_free=True,
                         cond_free_k=2.0,
-                        temperature=0.8
+                        temperature=1.0
                     )
                     print(f"Generated audio for chunk {i}")
                 except RuntimeError as e:

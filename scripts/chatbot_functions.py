@@ -3,14 +3,16 @@
 import logging
 from faiss_utils import similarity_search_with_score
 from document_processing import normalize_text
+from CognitiveProcessing import summarize_rag_results
 import config
 
-def retrieve_and_format_references(input_text, context):
+def retrieve_and_format_references(input_text, context, summarize=True):
     """
     Retrieve relevant documents and format references.
     Args:
         input_text (str): The user's input.
         context (dict): Context containing client, memory, and other settings.
+        summarize (bool): Whether to apply summarization to the results
     Returns:
         Tuple: references, filtered_docs, and context_documents.
     """
@@ -24,10 +26,10 @@ def retrieve_and_format_references(input_text, context):
         return "", None, None
 
     # Construct the references
-    references = build_references(filtered_docs)
+    references = build_references(filtered_docs, context if summarize else None)
 
     # Build the context documents for LLM prompt
-    context_documents = build_context_documents(filtered_docs)
+    context_documents = build_context_documents(filtered_docs, context if summarize else None)
 
     return references, filtered_docs, context_documents
 
@@ -91,29 +93,44 @@ def retrieve_relevant_documents(normalized_input, context):
 
     return filtered_docs
 
-def build_context_documents(filtered_docs):
+def build_context_documents(filtered_docs, context=None):
     """
     Combine content from filtered documents to form the context documents.
     """
-    context_documents = "\n\n".join(
-        [
-            f"{idx+1}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}\n{doc['content']}"
-            for idx, doc in enumerate(filtered_docs)
-        ]
-    )
-    return context_documents
+    if not filtered_docs:
+        return ""
+        
+    # Format documents with metadata
+    formatted_docs = [
+        {
+            'content': f"{idx+1}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}\n{doc['content']}",
+            'score': doc.get('score', 0)
+        }
+        for idx, doc in enumerate(filtered_docs)
+    ]
+    
+    # Summarize the formatted documents
+    return summarize_rag_results(formatted_docs, context=context)
 
-def build_references(filtered_docs):
+def build_references(filtered_docs, context=None):
     """
     Construct the reference list from filtered documents.
     """
-    references = "References:\n" + "\n".join(
-        [
-            f"[Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']}: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}]\n{doc['content']}\n"
-            for doc in filtered_docs
-        ]
-    )
-    return references
+    if not filtered_docs:
+        return ""
+        
+    # Format documents with metadata
+    formatted_docs = [
+        {
+            'content': f"[Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']}: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}]\n{doc['content']}",
+            'score': doc.get('score', 0)
+        }
+        for idx, doc in enumerate(filtered_docs)
+    ]
+    
+    # Summarize the formatted references
+    summary = summarize_rag_results(formatted_docs, max_length=1000, context=context)  # Using shorter length for references display
+    return f"References:\n{summary}" if summary else ""
 
 def generate_response(input_text, context_documents, context, history):
     """
@@ -167,8 +184,11 @@ def generate_local_response(input_text, context_documents, context, history):
     """
     Generate response using local model.
     """
+    # Get the appropriate system prompt
+    system_prompt = context.get('system_prompt', context['SYSTEM_PROMPT'])
+    
     # Build the prompt for the local model
-    prompt = build_local_prompt(context['SYSTEM_PROMPT'], history, context_documents, input_text)
+    prompt = build_local_prompt(system_prompt, history, context_documents, input_text)
 
     # Log the final prompt sent to the local LLM
     logging.info(f"Final prompt sent to local LLM:\n{prompt}")
@@ -220,11 +240,18 @@ def clear_history(context, history):
     Returns:
         Tuple: Cleared chat history, cleared references, cleared input field, and session state.
     """
-    # Ensure history is treated as a list before clearing
-    if not isinstance(history, list):
-        history = []
+    try:
+        # Clear memory
+        if context.get("memory"):
+            context["memory"].clear()
 
-    context["memory"].clear()  # Clear the conversation memory
-    history.clear()  # Clear the history in the session state
-    
-    return "", "", "", history
+        # Clear chat history
+        cleared_history = []
+        cleared_refs = ""
+        cleared_input = ""
+
+        return cleared_history, cleared_refs, cleared_input
+
+    except Exception as e:
+        logging.error(f"Error clearing history: {e}")
+        return history, "", ""
