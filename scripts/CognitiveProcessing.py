@@ -236,6 +236,123 @@ FILTERED_INDICES: [List the indices (0-based) of relevant results, or empty list
     needs_followup = not is_relevant and follow_up.lower() != 'none'
     return needs_followup, follow_up, filtered_results
 
+def scrape_webpage(url: str) -> Optional[str]:
+    """
+    Scrape content from a webpage using BeautifulSoup.
+    Returns cleaned text content or None if scraping fails.
+    """
+    try:
+        # Download webpage with a reasonable timeout
+        response = requests.get(url, timeout=10, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        response.raise_for_status()
+        
+        # Parse with BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove unwanted elements
+        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+            element.decompose()
+        
+        # Find main content (common content containers)
+        main_content = None
+        for container in ['main', 'article', '[role="main"]', '#content', '.content', '.main-content']:
+            main_content = soup.select_one(container)
+            if main_content:
+                break
+        
+        # If no main content found, use body
+        if not main_content:
+            main_content = soup.body
+        
+        if main_content:
+            # Get text with preserved paragraph structure
+            paragraphs = []
+            for p in main_content.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                text = p.get_text(strip=True)
+                if text:  # Only add non-empty paragraphs
+                    paragraphs.append(text)
+            return '\n\n'.join(paragraphs)
+        
+        return None
+        
+    except Exception as e:
+        logging.error(f"Error scraping {url}: {str(e)}")
+        return None
+
+def evaluate_content_relevance(content: str, query: str, context: Dict) -> Tuple[bool, str]:
+    """
+    Evaluate if scraped content is relevant to the query.
+    Returns: (is_relevant, relevant_excerpt)
+    """
+    if not content:
+        return False, ""
+        
+    prompt = f"""Evaluate if this content is relevant to answering the query.
+If relevant, extract the most pertinent information.
+
+Query: "{query}"
+
+Content:
+{content[:2000]}  # Limit content length for LLM
+
+Respond in this format:
+RELEVANT: [true/false]
+REASON: [Brief explanation]
+EXCERPT: [If relevant, include the most pertinent information here. Otherwise write 'none']
+"""
+    
+    if config.MODEL_SOURCE == "openai":
+        response = context["client"].chat.completions.create(
+            model=context["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+        )
+        eval_text = response.choices[0].message.content.strip()
+    else:
+        response = context["client"].chat(
+            model=context["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        eval_text = response['message']['content'].strip()
+    
+    # Parse evaluation
+    eval_lines = eval_text.split('\n')
+    is_relevant = eval_lines[0].lower().endswith('true')
+    excerpt = ""
+    
+    if is_relevant:
+        for i, line in enumerate(eval_lines):
+            if line.startswith('EXCERPT:'):
+                excerpt = '\n'.join(eval_lines[i+1:]).strip()
+                break
+    
+    return is_relevant, excerpt
+
+def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict) -> str:
+    """
+    Get detailed content from web pages based on search results.
+    Returns relevant content from the pages.
+    """
+    detailed_content = []
+    
+    # Try to scrape and evaluate content from each result
+    for result in search_results[:3]:  # Limit to top 3 results
+        url = result.get('link') or result.get('url') or result.get('href')
+        if not url:
+            continue
+            
+        content = scrape_webpage(url)
+        if not content:
+            continue
+            
+        is_relevant, excerpt = evaluate_content_relevance(content, query, context)
+        if is_relevant and excerpt:
+            detailed_content.append(f"From {url}:\n{excerpt}")
+    
+    return "\n\n".join(detailed_content) if detailed_content else ""
+
 def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
     Determines if a web search is needed based on the user query and RAG summary,
@@ -547,6 +664,13 @@ Source: [Primary source name]"""
                     result["web_results"] = response['message']['content'].strip()
                     
                 logging.info(f"Summarized web search results: {result['web_results']}")
+                
+                # Get detailed content from web pages
+                detailed_content = get_detailed_web_content(filtered_results, query, context)
+                
+                # If we have detailed content, add it to the results
+                if detailed_content:
+                    result["web_results"] += "\n\nDetailed Information:\n" + detailed_content
             else:
                 logging.warning("No valid search results found")
                 result["web_results"] = "No search results."
