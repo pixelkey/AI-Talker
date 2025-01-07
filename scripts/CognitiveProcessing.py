@@ -171,13 +171,14 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
             # Use LLM to optimize the search query
             prompt = f"""Convert this search request into a concise and effective search query (2-5 words).
 Focus on the key terms that will yield the most relevant results.
+Do not include any quotes in your response.
 
 Search request: {search_topic}
 
-Respond with ONLY the optimized search query. Examples:
-"funny jokes trending 2025"
-"current weather Sydney"
-"SpaceX latest launch news"
+Respond with ONLY the optimized search query, no quotes. Examples:
+funny jokes trending 2025
+current weather Sydney
+SpaceX latest launch news
 """
             if config.MODEL_SOURCE == "openai":
                 response = context["client"].chat.completions.create(
@@ -185,13 +186,13 @@ Respond with ONLY the optimized search query. Examples:
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=20,
                 )
-                search_query = response.choices[0].message.content.strip()
+                search_query = response.choices[0].message.content.strip().replace('"', '').replace("'", '')
             else:
                 response = context["client"].chat(
                     model=context["LLM_MODEL"],
                     messages=[{"role": "user", "content": prompt}],
                 )
-                search_query = response['message']['content'].strip()
+                search_query = response['message']['content'].strip().replace('"', '').replace("'", '')
                 
             logging.info(f"Optimized search query: {search_query}")
         else:
@@ -204,13 +205,13 @@ Consider:
 3. If the query asks about topics likely not covered in the local knowledge base
 
 Respond with EXACTLY one of these two formats:
-1. If no web search is needed: "NO_SEARCH_NEEDED"
-2. If web search is needed: A concise search query (2-5 words) that will help find relevant information.
+1. If no web search is needed: NO_SEARCH_NEEDED
+2. If web search is needed: A concise search query (2-5 words) that will help find relevant information. Do not include quotes.
 
 Example responses:
-- "NO_SEARCH_NEEDED"
-- "current weather Adelaide"
-- "latest SpaceX launch news"
+NO_SEARCH_NEEDED
+current weather Adelaide
+latest SpaceX launch news
 """},
                 {"role": "user", "content": f"User Query: {query}\nRAG Summary: {rag_summary}\n\nDoes this query need a web search? Respond in the format specified above:"}
             ]
@@ -231,13 +232,13 @@ Consider:
 3. If the query asks about topics likely not covered in the local knowledge base
 
 Respond with EXACTLY one of these two formats:
-1. If no web search is needed: "NO_SEARCH_NEEDED"
-2. If web search is needed: A concise search query (2-5 words) that will help find relevant information.
+1. If no web search is needed: NO_SEARCH_NEEDED
+2. If web search is needed: A concise search query (2-5 words) that will help find relevant information. Do not include quotes.
 
 Example responses:
-- "NO_SEARCH_NEEDED"
-- "current weather Adelaide"
-- "latest SpaceX launch news"
+NO_SEARCH_NEEDED
+current weather Adelaide
+latest SpaceX launch news
 
 User Query: {query}
 RAG Summary: {rag_summary}
@@ -256,42 +257,11 @@ Does this query need a web search? Respond in the format specified above:"""
             logging.info(f"LLM Response: {llm_response}")
             
             # Check if search is needed and get optimized query
-            needs_search = llm_response != "NO_SEARCH_NEEDED"
-            search_query = llm_response if needs_search else ""
-            
-            # Optimize the search query using LLM
-            if needs_search:
-                prompt = f"""Convert this search request into a concise and effective search query (2-5 words).
-Focus on the key terms that will yield the most relevant results.
-
-Search request: {search_query}
-
-Respond with ONLY the optimized search query. Examples:
-"funny jokes trending 2025"
-"current weather Sydney"
-"SpaceX latest launch news"
-"""
-                if config.MODEL_SOURCE == "openai":
-                    response = context["client"].chat.completions.create(
-                        model=context["LLM_MODEL"],
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=20,
-                    )
-                    search_query = response.choices[0].message.content.strip()
-                else:
-                    response = context["client"].chat(
-                        model=context["LLM_MODEL"],
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    search_query = response['message']['content'].strip()
-                    
-                logging.info(f"Optimized search query: {search_query}")
-        
-        result["needs_web_search"] = needs_search
-        result["web_results"] = ""
+            result["needs_web_search"] = llm_response != "NO_SEARCH_NEEDED"
+            search_query = llm_response if result["needs_web_search"] else ""
         
         # Perform web search if needed
-        if needs_search:
+        if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
             # Create DDGS instance and perform search

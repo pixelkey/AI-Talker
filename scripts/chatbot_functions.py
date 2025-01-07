@@ -42,25 +42,38 @@ def chatbot_response(input_text, context_documents, context, history):
         context (dict): Context containing client, memory, and other settings.
         history (list): Session state storing chat history.
     Returns:
-        Tuple: Updated chat history, LLM response, and cleared input.
+        Tuple: Updated chat history, LLM response, references, and cleared input.
     """
+    # Get initial references and context documents
+    references, filtered_docs, initial_context = retrieve_and_format_references(input_text, context)
+    
+    # If we have context from RAG, use it, otherwise use provided context_documents
+    context_documents = initial_context if initial_context else context_documents
+    
     # Check if web search is needed based on RAG results
     web_search_results = determine_and_perform_web_search(input_text, context_documents or "", context)
     
-    # If web search was performed, append results to context_documents
+    # If web search was performed, append results to context_documents and references
     if web_search_results["needs_web_search"] and web_search_results["web_results"]:
+        # Add to context documents
         if context_documents:
             context_documents += "\n\nWeb Search Results:\n" + web_search_results["web_results"]
         else:
             context_documents = "Web Search Results:\n" + web_search_results["web_results"]
+            
+        # Add to references
+        if references:
+            references += "\n\nWeb Search Results:\n" + web_search_results["web_results"]
+        else:
+            references = "Web Search Results:\n" + web_search_results["web_results"]
     
     # Generate the response based on the model source
     response_text = generate_response(input_text, context_documents, context, history)
     if response_text is None:
-        return history, "Error generating response.", ""
+        return history, "Error generating response.", references, ""
 
-    # Return the history unchanged, the response, and a cleared input field
-    return history, response_text, ""
+    # Return the history unchanged, the response, references, and a cleared input field
+    return history, response_text, references, ""
 
 def retrieve_relevant_documents(normalized_input, context):
     """

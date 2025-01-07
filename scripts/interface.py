@@ -82,8 +82,8 @@ def setup_gradio_interface(context):
             # Get references and generate response
             refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
             
-            # Generate the LLM response
-            _, response, _ = chatbot_response(input_text, context_documents, context, history)
+            # Generate the LLM response and get updated references
+            _, response, refs, _ = chatbot_response(input_text, context_documents, context, history)
             
             # Update history with the new user and bot messages
             new_history = history + [(f"User: {input_text}", f"Bot: {response}")]
@@ -98,10 +98,10 @@ def setup_gradio_interface(context):
             context['embedding_updater'].update_chat_embeddings_async(history, state)
             
             return (
-                new_history,  # history
+                new_history,  # chatbot
                 refs,        # references
-                "",          # input_text
-                new_history, # session_state
+                "",         # input_text (clear it)
+                new_history, # gr.State
                 audio_path   # audio_output
             )
             
