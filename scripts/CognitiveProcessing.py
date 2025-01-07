@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional
 from langchain.docstore.document import Document
 import config
 from gpu_utils import is_gpu_too_hot
-from duckduckgo_search import ddg
+from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 import requests
 import json
@@ -57,7 +57,7 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
     Args:
         context_documents (Optional[List[Dict[str, Any]]]): List of retrieved documents from RAG
         max_length (int): Maximum length of the summarized context in characters
-        context (Optional[Dict[str, Any]]): Context containing LLM client and settings
+        context (Optional[Dict[str, Any]]]: Context containing LLM client and settings
         
     Returns:
         str: Original or summarized context suitable for LLM input
@@ -215,7 +215,7 @@ Analyze if this query needs a web search. Respond with 'false' or provide an opt
             logger.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
             # Perform DuckDuckGo search
-            search_results = ddg(search_query, max_results=3)
+            search_results = DDGS().search(search_query, max_results=3)
             
             web_content = []
             for result in search_results:
