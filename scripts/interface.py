@@ -112,9 +112,9 @@ def setup_gradio_interface(context):
             return history, "", "", history, None
 
     def clear_interface(history):
-        # Stop any ongoing reflection when clearing
-        if self_reflection:
-            self_reflection.stop_reflection()
+        # Stop any ongoing reflection by setting the event
+        if self_reflection and hasattr(self_reflection, 'stop_reflection'):
+            self_reflection.stop_reflection.set()
             
         cleared_history, cleared_refs, cleared_input = clear_history(context, history)
         return [], cleared_refs, cleared_input, [], None
@@ -140,8 +140,9 @@ def setup_gradio_interface(context):
                         input_text = gr.Textbox(
                             show_label=False,
                             placeholder="Enter text and press enter, or use the microphone...",
-                            lines=2,  # Increased to better match audio input height
-                            scale=1,  # Make it fill the available vertical space
+                            lines=1,
+                            max_lines=1,
+                            container=False
                         )
                     with gr.Column(scale=4, min_width=0):
                         with gr.Group():
@@ -150,13 +151,33 @@ def setup_gradio_interface(context):
                                 type="filepath",
                                 label="Speak",
                                 show_label=True,
-                                scale=1,  # Make it fill the available vertical space
+                                scale=1
                             )
                 with gr.Row():
+                    # Create a container div for consistent button heights
+                    gr.HTML("""
+                        <style>
+                        #submit-btn, #clear-btn {
+                            height: 40px !important;
+                            min-height: 40px !important;
+                            max-height: 40px !important;
+                            margin: 0 !important;
+                            padding: 0 16px !important;
+                        }
+                        </style>
+                    """)
                     with gr.Column(scale=3):
-                        submit_text = gr.Button("Submit", variant="primary", size="lg")
+                        submit_text = gr.Button(
+                            "Submit",
+                            variant="primary",
+                            elem_id="submit-btn"
+                        )
                     with gr.Column(scale=1):
-                        clear_btn = gr.Button("Clear", variant="secondary", size="lg")
+                        clear_btn = gr.Button(
+                            "Clear",
+                            variant="secondary",
+                            elem_id="clear-btn"
+                        )
             with gr.Column(scale=2):
                 references = gr.Textbox(
                     show_label=False,
