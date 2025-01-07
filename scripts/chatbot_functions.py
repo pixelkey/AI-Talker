@@ -53,28 +53,34 @@ def chatbot_response(input_text, context_documents, context, history):
     # Check if web search is needed based on RAG results
     web_search_results = determine_and_perform_web_search(input_text, context_documents or "", context)
     
-    # If web search was performed, append results to context_documents and references
+    # If web search was performed, evaluate and filter RAG references
+    final_references = ""
     if web_search_results["needs_web_search"] and web_search_results["web_results"]:
-        # Add to context documents
+        # First evaluate if RAG references are still relevant
+        if references:
+            filtered_references = evaluate_rag_results(references, input_text, context)
+            if filtered_references:
+                final_references = filtered_references + "\n---\n"
+        
+        # Add web search results
+        web_ref = "Web Search Results:\n" + web_search_results["web_results"]
+        final_references += web_ref
+        
+        # Update context documents
         if context_documents:
             context_documents += "\n\nWeb Search Results:\n" + web_search_results["web_results"]
         else:
             context_documents = "Web Search Results:\n" + web_search_results["web_results"]
-            
-        # Add to references with better formatting
-        web_ref = "\nWeb Search Results:\n" + web_search_results["web_results"]
-        if references:
-            references = references.rstrip('-\n') + "\n---\n" + web_ref
-        else:
-            references = web_ref
+    else:
+        final_references = references
     
     # Generate the response based on the model source
     response_text = generate_response(input_text, context_documents, context, history)
     if response_text is None:
-        return history, "Error generating response.", references, ""
+        return history, "Error generating response.", final_references, ""
 
     # Return the history unchanged, the response, references, and a cleared input field
-    return history, response_text, references, ""
+    return history, response_text, final_references, ""
 
 def retrieve_relevant_documents(normalized_input, context):
     """
@@ -254,6 +260,67 @@ def build_local_prompt(system_prompt, history, context_documents, input_text):
 
     prompt += f"Context Documents:\n{context_documents}\n\nUser Prompt:\n{input_text}"
     return prompt
+
+def evaluate_rag_results(references: str, query: str, context: dict) -> str:
+    """
+    Evaluate RAG results for relevance when web search is performed.
+    Returns filtered references if any are relevant.
+    """
+    if not references:
+        return ""
+        
+    prompt = f"""You are evaluating local knowledge base references for relevance to a query.
+A web search was also performed for this query, so we need to determine if these local references add value.
+
+Query: "{query}"
+
+Local References:
+{references}
+
+Evaluate if these references provide relevant, complementary information to answer the query.
+A reference is relevant if it:
+1. Provides unique context or background information
+2. Contains specific details that complement web search
+3. Offers historical or personal context
+
+A reference is NOT relevant if it:
+1. Contains outdated or superseded information
+2. Is completely unrelated to the query
+3. Provides no additional value beyond web search
+
+Respond in this exact format:
+KEEP_REFERENCES: [true/false]
+REASON: [Brief explanation of why references should be kept or removed]
+FILTERED_REFERENCES: [If keeping references, include only the relevant ones here. Otherwise write 'none']
+"""
+
+    if config.MODEL_SOURCE == "openai":
+        response = context["client"].chat.completions.create(
+            model=context["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+        )
+        eval_text = response.choices[0].message.content.strip()
+    else:
+        response = context["client"].chat(
+            model=context["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        eval_text = response['message']['content'].strip()
+    
+    # Parse evaluation
+    eval_lines = eval_text.split('\n')
+    keep_refs = eval_lines[0].lower().endswith('true')
+    filtered_refs = ""
+    
+    if keep_refs:
+        # Extract the filtered references section
+        for i, line in enumerate(eval_lines):
+            if line.startswith('FILTERED_REFERENCES:'):
+                filtered_refs = '\n'.join(eval_lines[i+1:]).strip()
+                break
+    
+    return filtered_refs if keep_refs else ""
 
 def clear_history(context, history):
     """
