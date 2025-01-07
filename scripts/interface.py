@@ -163,6 +163,16 @@ def setup_gradio_interface(context):
                             max-height: 40px !important;
                             margin: 0 !important;
                             padding: 0 16px !important;
+                            display: inline-flex !important;
+                            align-items: center !important;
+                            justify-content: center !important;
+                            text-align: center !important;
+                            line-height: 1 !important;
+                        }
+                        #submit-btn span, #clear-btn span {
+                            display: inline-block !important;
+                            visibility: visible !important;
+                            opacity: 1 !important;
                         }
                         </style>
                     """)
