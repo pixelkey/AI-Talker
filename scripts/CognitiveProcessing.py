@@ -282,9 +282,11 @@ Does this query need a web search? Respond in the format specified above:"""
                 try:
                     # Extract title and link from search result
                     title = result_item.get('title', '')
-                    url = result_item.get('link', '')  # News search uses 'link' instead of 'url'
+                    url = result_item.get('link', '')  # News search uses 'link'
                     if not url:
-                        url = result_item.get('url', '')  # Fallback to 'url' for text search
+                        url = result_item.get('url', '')  # Text search might use 'url'
+                    if not url:
+                        url = result_item.get('href', '')  # Text search might use 'href'
                     
                     # Get content from either news snippet or text body
                     content = result_item.get('body', '')
@@ -310,8 +312,39 @@ Does this query need a web search? Respond in the format specified above:"""
             
             # Summarize web content using LLM
             if web_content:
-                web_content_str = "\n\n".join([f"Source: {item['title']}\nURL: {item['link']}\nContent: {item['content']}" for item in web_content])
-                result["web_results"] = generate_llm_summary(web_content_str, context)
+                web_content_str = "\n\n".join([
+                    f"Source: {item['title']}\n"
+                    f"URL: {item['link']}\n"
+                    f"Content: {item['content']}\n"
+                    "---" for item in web_content
+                ])
+                
+                # Construct a generic prompt for summarizing search results
+                prompt = f"""Analyze and summarize the key information from these search results.
+Focus on extracting the most relevant and up-to-date information that answers the user's query.
+
+Search Results:
+{web_content_str}
+
+Format your response like this:
+Key Information: [Main findings or answer]
+Additional Details: [Any relevant context or supporting information]
+Source: [Primary source name]"""
+
+                if config.MODEL_SOURCE == "openai":
+                    response = context["client"].chat.completions.create(
+                        model=context["LLM_MODEL"],
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=150,
+                    )
+                    result["web_results"] = response.choices[0].message.content.strip()
+                else:
+                    response = context["client"].chat(
+                        model=context["LLM_MODEL"],
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    result["web_results"] = response['message']['content'].strip()
+                    
                 logging.info(f"Summarized web search results: {result['web_results']}")
             else:
                 logging.warning("No valid search results found")

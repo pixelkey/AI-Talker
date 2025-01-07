@@ -6,7 +6,7 @@ from document_processing import normalize_text
 from CognitiveProcessing import summarize_rag_results, determine_and_perform_web_search
 import config
 
-def retrieve_and_format_references(input_text, context, summarize=True):
+def retrieve_and_format_references(input_text, context):
     """
     Retrieve relevant documents and format references.
     Args:
@@ -26,10 +26,10 @@ def retrieve_and_format_references(input_text, context, summarize=True):
         return "", None, None
 
     # Construct the references
-    references = build_references(filtered_docs, context if summarize else None)
+    references = build_references(filtered_docs, context if True else None)
 
     # Build the context documents for LLM prompt
-    context_documents = build_context_documents(filtered_docs, context if summarize else None)
+    context_documents = build_context_documents(filtered_docs, context if True else None)
 
     return references, filtered_docs, context_documents
 
@@ -61,11 +61,12 @@ def chatbot_response(input_text, context_documents, context, history):
         else:
             context_documents = "Web Search Results:\n" + web_search_results["web_results"]
             
-        # Add to references
+        # Add to references with better formatting
+        web_ref = "\nWeb Search Results:\n" + web_search_results["web_results"]
         if references:
-            references += "\n\nWeb Search Results:\n" + web_search_results["web_results"]
+            references = references.rstrip('-\n') + "\n---\n" + web_ref
         else:
-            references = "Web Search Results:\n" + web_search_results["web_results"]
+            references = web_ref
     
     # Generate the response based on the model source
     response_text = generate_response(input_text, context_documents, context, history)
