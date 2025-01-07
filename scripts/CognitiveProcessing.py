@@ -3,6 +3,10 @@ from typing import List, Dict, Any, Optional
 from langchain.docstore.document import Document
 import config
 from gpu_utils import is_gpu_too_hot
+from duckduckgo_search import ddg
+from bs4 import BeautifulSoup
+import requests
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -136,3 +140,119 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
     except Exception as e:
         logger.error(f"Error summarizing RAG results: {str(e)}")
         return "" if not context_documents else context_documents[0].get('content', '') if isinstance(context_documents[0], dict) else context_documents[0].page_content
+
+def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Determines if a web search is needed based on the user query and RAG summary,
+    and performs the search if necessary.
+    
+    Args:
+        query (str): The original user query
+        rag_summary (str): The summarized RAG results
+        context (Dict[str, Any]): Context containing LLM client and settings
+        
+    Returns:
+        Dict[str, Any]: Dictionary containing:
+            - needs_web_search (bool): Whether web search was deemed necessary
+            - web_results (str): Results from web search if performed, empty string otherwise
+    """
+    try:
+        # Construct prompt to determine if web search is needed
+        messages = [
+            {"role": "system", "content": """You are a helpful assistant that determines if a web search is needed to answer a user's query. 
+Consider:
+1. If the RAG summary already provides a complete and up-to-date answer
+2. If the query requires real-time or current information
+3. If the query asks about topics likely not covered in the local knowledge base
+
+If no web search is needed, respond with exactly "false".
+If a web search is needed, respond with an optimized search query that will help find the missing information.
+Keep the search query concise and focused on what's missing from the RAG summary."""},
+            {"role": "user", "content": f"User Query: {query}\nRAG Summary: {rag_summary}\n\nAnalyze if this query needs a web search. Respond with 'false' or provide an optimized search query:"}
+        ]
+        
+        # Get LLM's decision
+        if config.MODEL_SOURCE == "openai":
+            response = context["client"].chat.completions.create(
+                model=context["LLM_MODEL"],
+                messages=messages,
+                max_tokens=50,  # Increased to allow for search query
+            )
+            llm_response = response.choices[0].message.content.strip()
+        else:
+            prompt = f"""You are a helpful assistant that determines if a web search is needed to answer a user's query. 
+Consider:
+1. If the RAG summary already provides a complete and up-to-date answer
+2. If the query requires real-time or current information
+3. If the query asks about topics likely not covered in the local knowledge base
+
+If no web search is needed, respond with exactly "false".
+If a web search is needed, respond with an optimized search query that will help find the missing information.
+Keep the search query concise and focused on what's missing from the RAG summary.
+
+User Query: {query}
+RAG Summary: {rag_summary}
+
+Analyze if this query needs a web search. Respond with 'false' or provide an optimized search query:"""
+            
+            response = context["client"].generate(
+                model=context["LLM_MODEL"],
+                prompt=prompt,
+            )
+            llm_response = response['response'].strip()
+        
+        # Check if search is needed and get optimized query
+        needs_search = llm_response.lower() != "false"
+        search_query = query if not needs_search else llm_response
+        
+        result = {
+            "needs_web_search": needs_search,
+            "web_results": ""
+        }
+        
+        # Perform web search if needed
+        if needs_search:
+            logger.info(f"Web search deemed necessary, performing search with query: {search_query}")
+            
+            # Perform DuckDuckGo search
+            search_results = ddg(search_query, max_results=3)
+            
+            web_content = []
+            for result in search_results:
+                try:
+                    # Fetch and parse webpage content
+                    response = requests.get(result['link'], timeout=5)
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Extract main content (remove scripts, styles, etc.)
+                    for script in soup(["script", "style"]):
+                        script.decompose()
+                    
+                    # Get text content
+                    text = soup.get_text()
+                    lines = (line.strip() for line in text.splitlines())
+                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                    text = ' '.join(chunk for chunk in chunks if chunk)
+                    
+                    web_content.append({
+                        'title': result['title'],
+                        'link': result['link'],
+                        'content': text[:1000]  # Limit content length
+                    })
+                except Exception as e:
+                    logger.warning(f"Error fetching content from {result['link']}: {str(e)}")
+                    continue
+            
+            # Summarize web content using LLM
+            if web_content:
+                web_content_str = "\n\n".join([f"Source: {item['title']}\nURL: {item['link']}\nContent: {item['content']}" for item in web_content])
+                result["web_results"] = generate_llm_summary(web_content_str, context)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in determine_and_perform_web_search: {str(e)}")
+        return {
+            "needs_web_search": False,
+            "web_results": ""
+        }
