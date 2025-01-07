@@ -3,7 +3,7 @@
 import logging
 from faiss_utils import similarity_search_with_score
 from document_processing import normalize_text
-from CognitiveProcessing import summarize_rag_results
+from CognitiveProcessing import summarize_rag_results, determine_and_perform_web_search
 import config
 
 def retrieve_and_format_references(input_text, context, summarize=True):
@@ -44,6 +44,16 @@ def chatbot_response(input_text, context_documents, context, history):
     Returns:
         Tuple: Updated chat history, LLM response, and cleared input.
     """
+    # Check if web search is needed based on RAG results
+    web_search_results = determine_and_perform_web_search(input_text, context_documents or "", context)
+    
+    # If web search was performed, append results to context_documents
+    if web_search_results["needs_web_search"] and web_search_results["web_results"]:
+        if context_documents:
+            context_documents += "\n\nWeb Search Results:\n" + web_search_results["web_results"]
+        else:
+            context_documents = "Web Search Results:\n" + web_search_results["web_results"]
+    
     # Generate the response based on the model source
     response_text = generate_response(input_text, context_documents, context, history)
     if response_text is None:

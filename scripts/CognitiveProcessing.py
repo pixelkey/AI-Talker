@@ -146,113 +146,211 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
     Determines if a web search is needed based on the user query and RAG summary,
     and performs the search if necessary.
     
-    Args:
-        query (str): The original user query
-        rag_summary (str): The summarized RAG results
-        context (Dict[str, Any]): Context containing LLM client and settings
-        
     Returns:
         Dict[str, Any]: Dictionary containing:
-            - needs_web_search (bool): Whether web search was deemed necessary
-            - web_results (str): Results from web search if performed, empty string otherwise
+            - needs_web_search (bool): Whether web search was performed
+            - web_results (str): Summarized results from web search if performed
     """
+    # Initialize result dictionary
+    result = {
+        "needs_web_search": False,
+        "web_results": ""
+    }
+    
     try:
-        # Construct prompt to determine if web search is needed
-        messages = [
-            {"role": "system", "content": """You are a helpful assistant that determines if a web search is needed to answer a user's query. 
-Consider:
-1. If the RAG summary already provides a complete and up-to-date answer
-2. If the query requires real-time or current information
-3. If the query asks about topics likely not covered in the local knowledge base
+        # For queries that explicitly request web search, bypass search decision but still optimize query
+        explicit_search = any(phrase in query.lower() for phrase in ["search the web", "search online", "look up", "find online"])
+        if explicit_search:
+            logging.info(f"Query '{query}' explicitly requests web search")
+            result["needs_web_search"] = True
+            # Remove the search command phrases to get the core query
+            search_topic = query.lower()
+            for phrase in ["search the web for", "search online for", "look up", "find online"]:
+                search_topic = search_topic.replace(phrase, "").strip()
+                
+            # Use LLM to optimize the search query
+            prompt = f"""Convert this search request into a concise and effective search query (2-5 words).
+Focus on the key terms that will yield the most relevant results.
 
-If no web search is needed, respond with exactly "false".
-If a web search is needed, respond with an optimized search query that will help find the missing information.
-Keep the search query concise and focused on what's missing from the RAG summary."""},
-            {"role": "user", "content": f"User Query: {query}\nRAG Summary: {rag_summary}\n\nAnalyze if this query needs a web search. Respond with 'false' or provide an optimized search query:"}
-        ]
-        
-        # Get LLM's decision
-        if config.MODEL_SOURCE == "openai":
-            response = context["client"].chat.completions.create(
-                model=context["LLM_MODEL"],
-                messages=messages,
-                max_tokens=50,  # Increased to allow for search query
-            )
-            llm_response = response.choices[0].message.content.strip()
+Search request: {search_topic}
+
+Respond with ONLY the optimized search query. Examples:
+"funny jokes trending 2025"
+"current weather Sydney"
+"SpaceX latest launch news"
+"""
+            if config.MODEL_SOURCE == "openai":
+                response = context["client"].chat.completions.create(
+                    model=context["LLM_MODEL"],
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=20,
+                )
+                search_query = response.choices[0].message.content.strip()
+            else:
+                response = context["client"].chat(
+                    model=context["LLM_MODEL"],
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                search_query = response['message']['content'].strip()
+                
+            logging.info(f"Optimized search query: {search_query}")
         else:
-            prompt = f"""You are a helpful assistant that determines if a web search is needed to answer a user's query. 
+            # Construct prompt to determine if web search is needed
+            messages = [
+                {"role": "system", "content": """You are a helpful assistant that determines if a web search is needed to answer a user's query. 
 Consider:
 1. If the RAG summary already provides a complete and up-to-date answer
 2. If the query requires real-time or current information
 3. If the query asks about topics likely not covered in the local knowledge base
 
-If no web search is needed, respond with exactly "false".
-If a web search is needed, respond with an optimized search query that will help find the missing information.
-Keep the search query concise and focused on what's missing from the RAG summary.
+Respond with EXACTLY one of these two formats:
+1. If no web search is needed: "NO_SEARCH_NEEDED"
+2. If web search is needed: A concise search query (2-5 words) that will help find relevant information.
+
+Example responses:
+- "NO_SEARCH_NEEDED"
+- "current weather Adelaide"
+- "latest SpaceX launch news"
+"""},
+                {"role": "user", "content": f"User Query: {query}\nRAG Summary: {rag_summary}\n\nDoes this query need a web search? Respond in the format specified above:"}
+            ]
+            
+            # Get LLM's decision
+            if config.MODEL_SOURCE == "openai":
+                response = context["client"].chat.completions.create(
+                    model=context["LLM_MODEL"],
+                    messages=messages,
+                    max_tokens=50,
+                )
+                llm_response = response.choices[0].message.content.strip()
+            else:
+                prompt = f"""You are a helpful assistant that determines if a web search is needed to answer a user's query. 
+Consider:
+1. If the RAG summary already provides a complete and up-to-date answer
+2. If the query requires real-time or current information
+3. If the query asks about topics likely not covered in the local knowledge base
+
+Respond with EXACTLY one of these two formats:
+1. If no web search is needed: "NO_SEARCH_NEEDED"
+2. If web search is needed: A concise search query (2-5 words) that will help find relevant information.
+
+Example responses:
+- "NO_SEARCH_NEEDED"
+- "current weather Adelaide"
+- "latest SpaceX launch news"
 
 User Query: {query}
 RAG Summary: {rag_summary}
 
-Analyze if this query needs a web search. Respond with 'false' or provide an optimized search query:"""
+Does this query need a web search? Respond in the format specified above:"""
+                
+                response = context["client"].chat(
+                    model=context["LLM_MODEL"],
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                llm_response = response['message']['content'].strip()
             
-            response = context["client"].chat(
-                model=context["LLM_MODEL"],
-                messages=[{"role": "user", "content": prompt}],
-            )
-            llm_response = response['message']['content'].strip()
+            # Log LLM's decision
+            logging.info(f"LLM's web search decision for query '{query}':")
+            logging.info(f"RAG Summary: {rag_summary}")
+            logging.info(f"LLM Response: {llm_response}")
+            
+            # Check if search is needed and get optimized query
+            needs_search = llm_response != "NO_SEARCH_NEEDED"
+            search_query = llm_response if needs_search else ""
+            
+            # Optimize the search query using LLM
+            if needs_search:
+                prompt = f"""Convert this search request into a concise and effective search query (2-5 words).
+Focus on the key terms that will yield the most relevant results.
+
+Search request: {search_query}
+
+Respond with ONLY the optimized search query. Examples:
+"funny jokes trending 2025"
+"current weather Sydney"
+"SpaceX latest launch news"
+"""
+                if config.MODEL_SOURCE == "openai":
+                    response = context["client"].chat.completions.create(
+                        model=context["LLM_MODEL"],
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=20,
+                    )
+                    search_query = response.choices[0].message.content.strip()
+                else:
+                    response = context["client"].chat(
+                        model=context["LLM_MODEL"],
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    search_query = response['message']['content'].strip()
+                    
+                logging.info(f"Optimized search query: {search_query}")
         
-        # Check if search is needed and get optimized query
-        needs_search = llm_response.lower() != "false"
-        search_query = query if not needs_search else llm_response
-        
-        result = {
-            "needs_web_search": needs_search,
-            "web_results": ""
-        }
+        result["needs_web_search"] = needs_search
+        result["web_results"] = ""
         
         # Perform web search if needed
         if needs_search:
-            logger.info(f"Web search deemed necessary, performing search with query: {search_query}")
+            logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
-            # Perform DuckDuckGo search
-            search_results = DDGS().search(search_query, max_results=3)
+            # Create DDGS instance and perform search
+            ddgs = DDGS()
+            try:
+                # Try news search first
+                search_results = list(ddgs.news(search_query, max_results=3))
+                if not search_results:
+                    # Fallback to text search if no news results
+                    logging.info("No news results, falling back to text search")
+                    search_results = list(ddgs.text(search_query, max_results=3))
+            except Exception as e:
+                logging.error(f"Error in DDGS search: {str(e)}")
+                search_results = []
             
             web_content = []
-            for result in search_results:
+            for result_item in search_results:
                 try:
-                    # Fetch and parse webpage content
-                    response = requests.get(result['link'], timeout=5)
-                    soup = BeautifulSoup(response.text, 'html.parser')
+                    # Extract title and link from search result
+                    title = result_item.get('title', '')
+                    url = result_item.get('link', '')  # News search uses 'link' instead of 'url'
+                    if not url:
+                        url = result_item.get('url', '')  # Fallback to 'url' for text search
                     
-                    # Extract main content (remove scripts, styles, etc.)
-                    for script in soup(["script", "style"]):
-                        script.decompose()
+                    # Get content from either news snippet or text body
+                    content = result_item.get('body', '')
+                    if not content:
+                        content = result_item.get('snippet', '')  # News search might have 'snippet'
                     
-                    # Get text content
-                    text = soup.get_text()
-                    lines = (line.strip() for line in text.splitlines())
-                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                    text = ' '.join(chunk for chunk in chunks if chunk)
+                    if not url or not title or not content:
+                        logging.warning(f"Skipping result due to missing data: {result_item}")
+                        continue
+                        
+                    # Log search result metadata
+                    logging.info(f"Found search result: Title='{title}' URL='{url}'")
+                    logging.debug(f"Content preview: {content[:100]}...")
                     
                     web_content.append({
-                        'title': result['title'],
-                        'link': result['link'],
-                        'content': text[:1000]  # Limit content length
+                        'title': title,
+                        'link': url,
+                        'content': content
                     })
                 except Exception as e:
-                    logger.warning(f"Error fetching content from {result['link']}: {str(e)}")
+                    logging.warning(f"Error processing search result: {str(e)}")
                     continue
             
             # Summarize web content using LLM
             if web_content:
                 web_content_str = "\n\n".join([f"Source: {item['title']}\nURL: {item['link']}\nContent: {item['content']}" for item in web_content])
                 result["web_results"] = generate_llm_summary(web_content_str, context)
+                logging.info(f"Summarized web search results: {result['web_results']}")
+            else:
+                logging.warning("No valid search results found")
+                result["web_results"] = "I apologize, but I couldn't find any relevant search results for your query."
+        else:
+            logging.info("Web search not needed based on LLM decision")
         
         return result
         
     except Exception as e:
-        logger.error(f"Error in determine_and_perform_web_search: {str(e)}")
-        return {
-            "needs_web_search": False,
-            "web_results": ""
-        }
+        logging.error(f"Error in determine_and_perform_web_search: {str(e)}")
+        return result  # Return the initialized result dictionary with default values
