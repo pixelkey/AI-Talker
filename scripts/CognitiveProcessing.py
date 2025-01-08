@@ -53,14 +53,6 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
     """
     Summarize RAG retrieval results only if they exceed the maximum length.
     Otherwise, return the original content as is.
-    
-    Args:
-        context_documents (Optional[List[Dict[str, Any]]]): List of retrieved documents from RAG
-        max_length (int): Maximum length of the summarized context in characters
-        context (Optional[Dict[str, Any]]]: Context containing LLM client and settings
-        
-    Returns:
-        str: Original or summarized context suitable for LLM input
     """
     if not context_documents:
         return ""
@@ -90,11 +82,23 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
             # Skip empty content
             if not content.strip():
                 continue
+
+            # Skip reference sections
+            content_parts = content.split("REFERENCES:")
+            clean_content = content_parts[0].strip()  # Take only the part before REFERENCES
+            
+            # Skip if content is just metadata or references
+            if not clean_content or clean_content.lower().startswith("references"):
+                continue
                 
-            all_content.append(content)
-            total_length += len(content)
+            all_content.append(clean_content)
+            total_length += len(clean_content)
         
-        # If total length is within limit, return original content
+        # If no valid content after filtering
+        if not all_content:
+            return ""
+            
+        # If total length is within limit, return filtered content
         if total_length <= max_length:
             return "\n\n".join(all_content)
             
@@ -147,12 +151,12 @@ def perform_web_search(search_query: str, ddgs: DDGS, max_depth: int = 1, curren
     Returns a list of search results.
     """
     try:
-        # Try news search first
-        search_results = list(ddgs.news(search_query, max_results=3))
+        # Try news search first with more results
+        search_results = list(ddgs.news(search_query, max_results=5))
         if not search_results:
             # Fallback to text search if no news results
             logging.info("No news results, falling back to text search")
-            search_results = list(ddgs.text(search_query, max_results=3))
+            search_results = list(ddgs.text(search_query, max_results=10))
         
         return search_results
     except Exception as e:
@@ -175,30 +179,26 @@ def evaluate_search_results(results: List[Dict], original_query: str, context: D
         for r in results
     ])
     
-    prompt = f"""You are evaluating search results for relevance to the original query.
+    prompt = f"""Evaluate these search results for relevance to the original query.
+Consider a result relevant if it has ANY information that could help answer the query.
+Be inclusive rather than exclusive in what you consider relevant.
 
 Original Query: "{original_query}"
 
 Search Results:
 {results_str}
 
-For each result, determine if it is relevant to answering the original query.
-A result is relevant if it:
-1. Directly addresses the user's question or search intent
-2. Contains factual, up-to-date information about the topic
-3. Comes from a reliable source
-
-A result is NOT relevant if it:
-1. Is technical documentation unrelated to the query
-2. Contains only tangential or unrelated information
-3. Is a generic landing page or index
-
 Analyze the results and respond in this exact format:
 RELEVANT: [true/false]
 REASON: [Brief explanation why results are or aren't relevant]
 FOLLOW_UP: [If results aren't relevant or are incomplete, suggest a more specific search query. Otherwise, write 'none']
-FILTERED_INDICES: [List the indices (0-based) of relevant results, or empty list if none are relevant]
-"""
+FILTERED_INDICES: [List the indices (0-based) of relevant results]
+
+Example response:
+RELEVANT: true
+REASON: Results 0 and 2 contain recent information about the topic
+FOLLOW_UP: none
+FILTERED_INDICES: [0, 2]"""
 
     if config.MODEL_SOURCE == "openai":
         response = context["client"].chat.completions.create(
@@ -214,24 +214,41 @@ FILTERED_INDICES: [List the indices (0-based) of relevant results, or empty list
         )
         eval_text = response['message']['content'].strip()
     
-    # Parse evaluation
-    eval_lines = eval_text.split('\n')
-    is_relevant = eval_lines[0].lower().endswith('true')
-    follow_up = [line for line in eval_lines if line.startswith('FOLLOW_UP:')][0].split(':', 1)[1].strip()
-    indices_line = [line for line in eval_lines if line.startswith('FILTERED_INDICES:')][0].split(':', 1)[1].strip()
-    
     try:
-        # Parse indices, handling empty list case
-        if indices_line.strip('[] '):
-            relevant_indices = [int(i.strip()) for i in indices_line.strip('[]').split(',')]
+        # Parse evaluation
+        eval_lines = eval_text.split('\n')
+        is_relevant = any(line.lower().endswith('true') for line in eval_lines if line.startswith('RELEVANT:'))
+        
+        # Get follow-up query
+        follow_up_lines = [line for line in eval_lines if line.startswith('FOLLOW_UP:')]
+        follow_up = follow_up_lines[0].split(':', 1)[1].strip() if follow_up_lines else "none"
+        
+        # Get indices, with fallback to using all results if parsing fails
+        indices_lines = [line for line in eval_lines if line.startswith('FILTERED_INDICES:')]
+        if indices_lines:
+            indices_str = indices_lines[0].split(':', 1)[1].strip()
+            try:
+                relevant_indices = [int(i.strip()) for i in indices_str.strip('[]').split(',') if i.strip()]
+            except:
+                # If parsing fails, consider all results relevant
+                relevant_indices = list(range(len(results)))
         else:
-            relevant_indices = []
+            relevant_indices = list(range(len(results)))
             
         # Filter results by relevant indices
         filtered_results = [results[i] for i in relevant_indices if i < len(results)]
+        
+        # If no results were marked relevant but we have results, use them all
+        if not filtered_results and results:
+            filtered_results = results
+            is_relevant = True
+            
     except Exception as e:
-        logging.error(f"Error parsing result indices: {str(e)}")
-        filtered_results = []
+        logging.error(f"Error parsing evaluation response: {str(e)}")
+        # On error, consider all results relevant
+        filtered_results = results
+        is_relevant = True
+        follow_up = "none"
     
     needs_followup = not is_relevant and follow_up.lower() != 'none'
     return needs_followup, follow_up, filtered_results
@@ -254,28 +271,68 @@ def scrape_webpage(url: str) -> Optional[str]:
         # Remove unwanted elements
         for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
             element.decompose()
+            
+        # Look for structured data first (JSON-LD, microdata)
+        structured_data = []
         
-        # Find main content (common content containers)
+        # Check JSON-LD
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string)
+                structured_data.append(data)
+            except:
+                continue
+                
+        # Check microdata
+        for element in soup.find_all(attrs={'itemtype': True}):
+            data = {}
+            for prop in element.find_all(attrs={'itemprop': True}):
+                data[prop['itemprop']] = prop.get_text(strip=True)
+            if data:
+                structured_data.append(data)
+                
+        # If we found structured data, include it first
+        content_parts = []
+        if structured_data:
+            content_parts.append("Structured Data:")
+            content_parts.append(json.dumps(structured_data, indent=2))
+            
+        # Find main content area
         main_content = None
         for container in ['main', 'article', '[role="main"]', '#content', '.content', '.main-content']:
             main_content = soup.select_one(container)
             if main_content:
                 break
-        
+                
         # If no main content found, use body
         if not main_content:
             main_content = soup.body
-        
+            
         if main_content:
-            # Get text with preserved paragraph structure
-            paragraphs = []
-            for p in main_content.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                text = p.get_text(strip=True)
-                if text:  # Only add non-empty paragraphs
-                    paragraphs.append(text)
-            return '\n\n'.join(paragraphs)
-        
-        return None
+            # Get text with semantic structure preserved
+            for element in main_content.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'dl', 'div']):
+                # Skip empty or navigation elements
+                if not element.get_text(strip=True) or element.find_parent(['nav', 'header', 'footer']):
+                    continue
+                    
+                # Check if element has any special attributes or classes that might indicate importance
+                attrs = element.attrs
+                if any(attr in str(attrs).lower() for attr in ['price', 'date', 'time', 'current', 'value', 'result']):
+                    content_parts.append(f"[Important] {element.get_text(strip=True)}")
+                else:
+                    content_parts.append(element.get_text(strip=True))
+                    
+            # Look for data in tables
+            for table in main_content.find_all('table'):
+                rows = []
+                for row in table.find_all('tr'):
+                    cols = [col.get_text(strip=True) for col in row.find_all(['td', 'th'])]
+                    if any(cols):  # Skip empty rows
+                        rows.append(' | '.join(cols))
+                if rows:
+                    content_parts.append("\nTable Data:\n" + '\n'.join(rows))
+                    
+        return '\n\n'.join(content_parts) if content_parts else None
         
     except Exception as e:
         logging.error(f"Error scraping {url}: {str(e)}")
@@ -357,224 +414,77 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
     """
     Determines if a web search is needed based on the user query and RAG summary,
     and performs the search if necessary.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing:
-            - needs_web_search (bool): Whether web search was performed
-            - web_results (str): Summarized results from web search if performed
     """
-    # Initialize result dictionary
     result = {
         "needs_web_search": False,
         "web_results": ""
     }
     
     try:
-        # For queries that explicitly request web search, bypass search decision but still optimize query
-        explicit_search = any(phrase in query.lower() for phrase in ["search the web", "search online", "look up", "find online"])
-        if explicit_search:
-            logging.info(f"Query '{query}' explicitly requests web search")
+        # First, check for explicit search requests
+        explicit_search_terms = ["search", "look up", "find", "what is", "how to", "current", "latest", "news", "weather", "price", "status"]
+        is_explicit_search = any(term in query.lower() for term in explicit_search_terms)
+        
+        if is_explicit_search:
+            # Use the query directly, just clean it up
+            search_query = query.lower()
+            for term in ["search for", "look up", "find", "what is", "how to"]:
+                search_query = search_query.replace(term, "").strip()
             result["needs_web_search"] = True
-            # Remove the search command phrases to get the core query
-            search_topic = query.lower()
-            for phrase in ["search the web for", "search online for", "look up", "find online"]:
-                search_topic = search_topic.replace(phrase, "").strip()
-                
-            # Use LLM to optimize the search query
-            prompt = f"""Convert this search request into a concise and effective search query (2-5 words).
-Focus on the key terms that will yield the most relevant results.
-DO NOT include any quotes or special characters unless they are ABSOLUTELY necessary for an exact phrase search.
-
-Search request: {search_topic}
-
-Respond with ONLY the optimized search query, no quotes. Examples:
-funny jokes trending 2025
-current weather Sydney
-SpaceX latest launch news
-Perth WA weather today
-"""
-            if config.MODEL_SOURCE == "openai":
-                response = context["client"].chat.completions.create(
-                    model=context["LLM_MODEL"],
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=20,
-                )
-                search_query = response.choices[0].message.content.strip().replace('"', '').replace("'", '')
-            else:
-                response = context["client"].chat(
-                    model=context["LLM_MODEL"],
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                search_query = response['message']['content'].strip().replace('"', '').replace("'", '')
-                
-            logging.info(f"Optimized search query: {search_query}")
-        else:
-            # Construct prompt to determine if web search is needed
-            messages = [
-                {"role": "system", "content": """You are a helpful assistant that determines if a web search is needed to answer a user's query.
-
-ALWAYS require a web search for:
-
-1. Real-time Information:
-   - Weather conditions
-   - Current events and news
-   - Traffic conditions
-   - Exchange rates
-   - Time in different locations
-
-2. Dynamic Data:
-   - Prices and rates
-   - Stock market data
-   - Sports scores
-   - Flight status
-   - Business hours
-
-3. Factual Information:
-   - Statistics and numbers
-   - Population data
-   - Scientific facts
-   - Research findings
-   - Study results
-   - Product specifications
-   - Technical details
-
-4. Location-specific Information:
-   - Local businesses
-   - Regional conditions
-   - Geographic data
-   - Demographic information
-   - Local regulations
-
-5. Time-sensitive Content:
-   - Event schedules
-   - Release dates
-   - Deadlines
-   - Upcoming events
-   - Service changes
-
-6. Verifiable Claims:
-   - Quotes and statements
-   - Historical dates
-   - Legal information
-   - Medical facts
-   - Professional credentials
-   - Company information
-
-Consider these factors:
-1. Is the information likely to change or be updated?
-2. Would using outdated information be misleading?
-3. Does the answer need to be verified from authoritative sources?
-4. Could incorrect information be harmful?
-5. Is this something that should be fact-checked rather than relying on general knowledge?
-
-Respond with EXACTLY one of these two formats:
-1. If web search is needed (which it is for most factual queries): A concise search query (2-5 words, no quotes)
-2. If no web search is needed: "NO_SEARCH_NEEDED"
-
-Example responses:
-weather Perth WA          (current conditions)
-Tesla stock price         (market data)
-iPhone 15 specifications  (product facts)
-Australia population 2025 (current statistics)
-NO_SEARCH_NEEDED         (general knowledge like "what is photosynthesis")"""},
-                {"role": "user", "content": f"User Query: {query}\nRAG Summary: {rag_summary}\n\nDoes this query need a web search? Respond in the format specified above:"}
-            ]
             
-            # Get LLM's decision
+        else:
+            # Use a simpler prompt that focuses on categories rather than exact formatting
+            prompt = f"""Does this query need real-time or factual information from the web? Consider these categories:
+
+1. Real-time data (weather, news, prices)
+2. Current facts or statistics
+3. Recent events or changes
+4. Location-specific information
+5. Technical or product details
+
+Query: "{query}"
+RAG Summary: {rag_summary}
+
+First line: Answer YES or NO
+Second line: If YES, write 2-5 key search terms"""
+
             if config.MODEL_SOURCE == "openai":
                 response = context["client"].chat.completions.create(
                     model=context["LLM_MODEL"],
-                    messages=messages,
-                    max_tokens=50,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=50
                 )
                 llm_response = response.choices[0].message.content.strip()
             else:
-                prompt = f"""You are a helpful assistant that determines if a web search is needed to answer a user's query.
-
-ALWAYS require a web search for:
-
-1. Real-time Information:
-   - Weather conditions
-   - Current events and news
-   - Traffic conditions
-   - Exchange rates
-   - Time in different locations
-
-2. Dynamic Data:
-   - Prices and rates
-   - Stock market data
-   - Sports scores
-   - Flight status
-   - Business hours
-
-3. Factual Information:
-   - Statistics and numbers
-   - Population data
-   - Scientific facts
-   - Research findings
-   - Study results
-   - Product specifications
-   - Technical details
-
-4. Location-specific Information:
-   - Local businesses
-   - Regional conditions
-   - Geographic data
-   - Demographic information
-   - Local regulations
-
-5. Time-sensitive Content:
-   - Event schedules
-   - Release dates
-   - Deadlines
-   - Upcoming events
-   - Service changes
-
-6. Verifiable Claims:
-   - Quotes and statements
-   - Historical dates
-   - Legal information
-   - Medical facts
-   - Professional credentials
-   - Company information
-
-Consider these factors:
-1. Is the information likely to change or be updated?
-2. Would using outdated information be misleading?
-3. Does the answer need to be verified from authoritative sources?
-4. Could incorrect information be harmful?
-5. Is this something that should be fact-checked rather than relying on general knowledge?
-
-Respond with EXACTLY one of these two formats:
-1. If web search is needed (which it is for most factual queries): A concise search query (2-5 words, no quotes)
-2. If no web search is needed: "NO_SEARCH_NEEDED"
-
-Example responses:
-weather Perth WA          (current conditions)
-Tesla stock price         (market data)
-iPhone 15 specifications  (product facts)
-Australia population 2025 (current statistics)
-NO_SEARCH_NEEDED         (general knowledge like "what is photosynthesis")
-
-User Query: {query}
-RAG Summary: {rag_summary}
-
-Does this query need a web search? Respond in the format specified above:"""
-                
                 response = context["client"].chat(
                     model=context["LLM_MODEL"],
                     messages=[{"role": "user", "content": prompt}],
                 )
                 llm_response = response['message']['content'].strip()
-            
-            # Log LLM's decision
+
+            # Log the response
             logging.info(f"LLM's web search decision for query '{query}':")
             logging.info(f"RAG Summary: {rag_summary}")
             logging.info(f"LLM Response: {llm_response}")
-            
-            # Check if search is needed and get optimized query
-            result["needs_web_search"] = llm_response != "NO_SEARCH_NEEDED"
-            search_query = llm_response if result["needs_web_search"] else ""
+
+            # Parse response - look for YES/NO in first line
+            lines = [line.strip() for line in llm_response.split('\n') if line.strip()]
+            if not lines:
+                # No valid response, default to using original query
+                result["needs_web_search"] = True
+                search_query = query
+            else:
+                first_line = lines[0].lower()
+                if "yes" in first_line:
+                    result["needs_web_search"] = True
+                    # Try to get search terms from second line, fall back to query if needed
+                    search_query = lines[1] if len(lines) > 1 else query
+                    # Clean up search query
+                    search_query = search_query.lower()
+                    search_query = ' '.join(search_query.split()[:5])  # Limit to 5 words
+                else:
+                    result["needs_web_search"] = False
+                    search_query = ""
         
         # Perform web search if needed
         if result["needs_web_search"]:
@@ -634,6 +544,52 @@ Does this query need a web search? Respond in the format specified above:"""
             
             # Summarize web content using LLM
             if web_content:
+                # First evaluate RAG results for relevance
+                if rag_summary:
+                    rag_eval_prompt = f"""Evaluate if this RAG context contains information that directly answers or is relevant to the user's query.
+IMPORTANT: IGNORE any references or citations sections. Only evaluate the actual content.
+If you see "REFERENCES:" or similar sections, completely disregard them.
+
+Query: {query}
+
+RAG Context:
+{rag_summary}
+
+Response format:
+RELEVANT: [yes/no]
+SUMMARY: [1-2 sentence summary of ONLY the relevant content, or 'NOT_RELEVANT' if nothing relevant found]
+
+Example:
+If the RAG context only contains references or chat history that's not directly relevant, respond with:
+RELEVANT: no
+SUMMARY: NOT_RELEVANT"""
+
+                    if config.MODEL_SOURCE == "openai":
+                        rag_response = context["client"].chat.completions.create(
+                            model=context["LLM_MODEL"],
+                            messages=[{"role": "user", "content": rag_eval_prompt}],
+                            max_tokens=100,
+                        )
+                        rag_eval = rag_response.choices[0].message.content.strip()
+                    else:
+                        rag_response = context["client"].chat(
+                            model=context["LLM_MODEL"],
+                            messages=[{"role": "user", "content": rag_eval_prompt}],
+                        )
+                        rag_eval = rag_response['message']['content'].strip()
+
+                    # Parse RAG evaluation
+                    rag_lines = rag_eval.split('\n')
+                    is_rag_relevant = any('yes' in line.lower() for line in rag_lines if line.startswith('RELEVANT:'))
+                    if is_rag_relevant:
+                        summary_lines = [line for line in rag_lines if line.startswith('SUMMARY:')]
+                        if summary_lines and 'NOT_RELEVANT' not in summary_lines[0].upper():
+                            rag_summary = summary_lines[0].replace('SUMMARY:', '').strip()
+                        else:
+                            rag_summary = None
+                    else:
+                        rag_summary = None
+
                 web_content_str = "\n\n".join([
                     f"Source: {item['title']}\n"
                     f"URL: {item['link']}\n"
@@ -641,10 +597,17 @@ Does this query need a web search? Respond in the format specified above:"""
                     "---" for item in web_content
                 ])
                 
-                # Construct a generic prompt for summarizing search results
-                prompt = f"""Analyze and summarize the key information from these search results.
-Focus on extracting the most relevant and up-to-date information that answers the user's query.
+                # Construct prompt including relevant RAG context if any
+                prompt = f"""Analyze and summarize the key information from these search results that answers the user's query.
+Focus on the most recent and relevant information.
 
+Query: {query}
+"""
+
+                if rag_summary:
+                    prompt += f"\nRelevant Context:\n{rag_summary}\n"
+
+                prompt += f"""
 Search Results:
 {web_content_str}
 

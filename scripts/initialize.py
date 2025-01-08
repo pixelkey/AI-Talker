@@ -4,9 +4,20 @@ import config  # Import the config file
 from langchain.memory import ConversationBufferMemory
 from vector_store_setup import setup_vector_store  # Import vector store setup
 import tiktoken  # Import tiktoken for encoding
+import torch
+import gc
 
 # Initialize tiktoken for token counting with cl100k_base encoding
 token_encoding = tiktoken.get_encoding(config.TOKEN_ENCODING)
+
+def clear_gpu_memory():
+    """
+    Clear GPU memory cache and run garbage collection
+    """
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()  # Clear the GPU cache
+        torch.cuda.memory.empty_cache()  # More aggressive GPU memory clearing
+    gc.collect()  # Run garbage collection
 
 def initialize_model_and_retrieval():
     """
@@ -14,6 +25,9 @@ def initialize_model_and_retrieval():
     Returns:
         dict: Context dictionary with initialized components.
     """
+    # Clear GPU memory before initialization
+    clear_gpu_memory()
+
     # Initialize memory for conversation
     memory = ConversationBufferMemory()
 
