@@ -412,7 +412,7 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
 
 def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Determines if a web search is needed based on the user query and RAG summary,
+    Determines if a web search is needed based on the user query, conversation history, and RAG summary,
     and performs the search if necessary.
     """
     result = {
@@ -421,6 +421,15 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
     }
     
     try:
+        # Get recent conversation history
+        recent_messages = []
+        if "memory" in context:
+            try:
+                chat_history = context["memory"].chat_memory.messages[-5:]  # Get last 5 messages
+                recent_messages = [f"{msg.type}: {msg.content}" for msg in chat_history]
+            except:
+                logging.warning("Could not retrieve chat history")
+        
         # First, check for explicit search requests
         explicit_search_terms = ["search", "look up", "find", "what is", "how to", "current", "latest", "news", "weather", "price", "status"]
         is_explicit_search = any(term in query.lower() for term in explicit_search_terms)
@@ -442,11 +451,14 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
 4. Location-specific information
 5. Technical or product details
 
-Query: "{query}"
+Recent Conversation:
+{chr(10).join(recent_messages)}
+
+Current Query: "{query}"
 RAG Summary: {rag_summary}
 
 First line: Answer YES or NO
-Second line: If YES, write 2-5 key search terms"""
+Second line: If YES, write 2-5 key search terms that consider the full conversation context"""
 
             if config.MODEL_SOURCE == "openai":
                 response = context["client"].chat.completions.create(
