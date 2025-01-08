@@ -5,14 +5,14 @@ from faiss_utils import similarity_search_with_score
 from document_processing import normalize_text
 from CognitiveProcessing import summarize_rag_results, determine_and_perform_web_search
 import config
+from typing import Tuple, Dict, List
 
-def retrieve_and_format_references(input_text, context):
+def retrieve_and_format_references(input_text: str, context: Dict) -> Tuple[str, List[Dict], str]:
     """
     Retrieve relevant documents and format references.
     Args:
         input_text (str): The user's input.
         context (dict): Context containing client, memory, and other settings.
-        summarize (bool): Whether to apply summarization to the results
     Returns:
         Tuple: references, filtered_docs, and context_documents.
     """
@@ -27,6 +27,8 @@ def retrieve_and_format_references(input_text, context):
 
     # Construct the references
     references = build_references(filtered_docs, context if True else None)
+    if not references:
+        return "", None, None
 
     # Build the context documents for LLM prompt
     context_documents = build_context_documents(filtered_docs, context if True else None)
@@ -44,7 +46,7 @@ def chatbot_response(input_text, context_documents, context, history):
     Returns:
         Tuple: Updated chat history, LLM response, references, and cleared input.
     """
-    # Get initial references and context documents
+    # Get initial references and context documents (RAG results already evaluated for relevance)
     references, filtered_docs, initial_context = retrieve_and_format_references(input_text, context)
     
     # If we have context from RAG, use it, otherwise use provided context_documents
@@ -53,34 +55,38 @@ def chatbot_response(input_text, context_documents, context, history):
     # Check if web search is needed based on RAG results
     web_search_results = determine_and_perform_web_search(input_text, context_documents or "", context)
     
-    # If web search was performed, evaluate and filter RAG references
-    final_references = ""
+    # Initialize final references and context
+    final_references = []
+    final_context = []
+    
+    # Add RAG results if they exist
+    if references:
+        final_references.append(references)
+        final_context.append(references)
+    
+    # Add web search results if they exist
     if web_search_results["needs_web_search"] and web_search_results["web_results"]:
-        # First evaluate if RAG references are still relevant
-        if references:
-            filtered_references = evaluate_rag_results(references, input_text, context)
-            if filtered_references:
-                final_references = filtered_references + "\n---\n"
-        
-        # Add web search results
         web_ref = "Web Search Results:\n" + web_search_results["web_results"]
-        final_references += web_ref
-        
-        # Update context documents
-        if context_documents:
-            context_documents += "\n\nWeb Search Results:\n" + web_search_results["web_results"]
-        else:
-            context_documents = "Web Search Results:\n" + web_search_results["web_results"]
-    else:
-        final_references = references
+        final_references.append(web_ref)
+        final_context.append(web_ref)
+    
+    # If no results at all, add placeholder
+    if not final_references:
+        no_results = "No search results."
+        final_references.append(no_results)
+        final_context.append(no_results)
+    
+    # Combine all references with consistent formatting
+    final_references_str = "\n\n".join(final_references)
+    context_documents = "\n\n".join(final_context)
     
     # Generate the response based on the model source
     response_text = generate_response(input_text, context_documents, context, history)
     if response_text is None:
-        return history, "Error generating response.", final_references, ""
+        return history, "Error generating response.", final_references_str, ""
 
     # Return the history unchanged, the response, references, and a cleared input field
-    return history, response_text, final_references, ""
+    return history, response_text, final_references_str, ""
 
 def retrieve_relevant_documents(normalized_input, context):
     """
@@ -123,44 +129,35 @@ def retrieve_relevant_documents(normalized_input, context):
 
     return filtered_docs
 
-def build_context_documents(filtered_docs, context=None):
+def format_references(filtered_docs: List[Dict], context: Dict = None) -> str:
     """
-    Combine content from filtered documents to form the context documents.
+    Format references in a consistent way for both interface and LLM.
     """
     if not filtered_docs:
         return ""
-        
-    # Format documents with metadata
-    formatted_docs = [
-        {
-            'content': f"{idx+1}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}\n{doc['content']}",
-            'score': doc.get('score', 0)
-        }
-        for idx, doc in enumerate(filtered_docs)
-    ]
-    
-    # Summarize the formatted documents
-    return summarize_rag_results(formatted_docs, context=context)
 
-def build_references(filtered_docs, context=None):
+    # Format each document with consistent numbering and metadata
+    formatted_refs = []
+    for idx, doc in enumerate(filtered_docs, 1):
+        ref = f"{idx}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}\n{doc['content']}"
+        formatted_refs.append(ref)
+
+    return "\n\n".join(formatted_refs)
+
+def build_references(filtered_docs: List[Dict], context: Dict = None) -> str:
     """
     Construct the reference list from filtered documents.
+    Uses the common format_references function.
     """
-    if not filtered_docs:
-        return ""
-        
-    # Format documents with metadata
-    formatted_docs = [
-        {
-            'content': f"[Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']}: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}]\n{doc['content']}",
-            'score': doc.get('score', 0)
-        }
-        for idx, doc in enumerate(filtered_docs)
-    ]
-    
-    # Summarize the formatted references
-    summary = summarize_rag_results(formatted_docs, max_length=1000, context=context)  # Using shorter length for references display
-    return f"References:\n{summary}" if summary else ""
+    refs = format_references(filtered_docs, context)
+    return refs if refs else ""
+
+def build_context_documents(filtered_docs: List[Dict], context: Dict = None) -> str:
+    """
+    Combine content from filtered documents to form the context documents.
+    Uses the common format_references function.
+    """
+    return format_references(filtered_docs, context)
 
 def generate_response(input_text, context_documents, context, history):
     """
@@ -263,32 +260,31 @@ def build_local_prompt(system_prompt, history, context_documents, input_text):
 
 def evaluate_rag_results(references: str, query: str, context: dict) -> str:
     """
-    Evaluate RAG results for relevance when web search is performed.
+    Evaluate RAG results for relevance to the query.
     Returns filtered references if any are relevant.
     """
     if not references:
         return ""
         
-    prompt = f"""You are evaluating local knowledge base references for relevance to a query.
-A web search was also performed for this query, so we need to determine if these local references add value.
+    prompt = f"""Evaluate if these references from the local knowledge base are relevant to answering the query.
 
 Query: "{query}"
 
-Local References:
+References:
 {references}
 
-Evaluate if these references provide relevant, complementary information to answer the query.
+Evaluate if these references provide relevant information to answer the query.
 A reference is relevant if it:
-1. Provides unique context or background information
-2. Contains specific details that complement web search
-3. Offers historical or personal context
+1. Directly addresses the query or provides useful context
+2. Contains accurate and applicable information
+3. Helps in forming a complete answer
 
 A reference is NOT relevant if it:
-1. Contains outdated or superseded information
-2. Is completely unrelated to the query
-3. Provides no additional value beyond web search
+1. Is completely unrelated to the query
+2. Contains only tangential information
+3. Provides no value in answering the query
 
-Respond in this exact format:
+Respond in this format:
 KEEP_REFERENCES: [true/false]
 REASON: [Brief explanation of why references should be kept or removed]
 FILTERED_REFERENCES: [If keeping references, include only the relevant ones here. Otherwise write 'none']
