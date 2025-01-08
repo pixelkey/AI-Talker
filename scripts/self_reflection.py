@@ -95,10 +95,10 @@ class SelfReflection:
                     reflection_prompt = self._create_reflection_prompt(current_exchange, reflection_history)
                     
                     # Get and filter references
-                    refs, filtered_docs, context_documents = retrieve_and_format_references(reflection_prompt, self.context, summarize=False)
+                    refs, filtered_docs, context_documents = retrieve_and_format_references(reflection_prompt, self.context)
                     current_conversation_refs = self._filter_references(refs, current_exchange)
                     
-                    _, reflection, _ = chatbot_response(reflection_prompt, current_conversation_refs, temp_context, current_exchange)
+                    _, reflection, _, _ = chatbot_response(reflection_prompt, current_conversation_refs, temp_context, current_exchange)
                     logger.info(f"Generated reflection text: {reflection[:200]}...")
                     
                     if self.stop_reflection.is_set():
@@ -143,7 +143,7 @@ class SelfReflection:
                     refs, filtered_docs, context_documents = retrieve_and_format_references(continuation_prompt, self.context)
                     temp_context = self.context.copy()
                     temp_context['system_prompt'] = self.reflection_system_prompt
-                    _, decision, _ = chatbot_response(continuation_prompt, context_documents, temp_context, chat_history)
+                    _, decision, _, _ = chatbot_response(continuation_prompt, context_documents, temp_context, chat_history)
                     
                     logger.info(f"Continuation decision: {decision}")
                     
@@ -312,14 +312,14 @@ Structure (keep each section brief):
 Keep the framework focused and actionable. Avoid lengthy explanations."""
 
         # Get the dynamic framework from the LLM
-        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt_generator, self.context, summarize=False)
+        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_prompt_generator, self.context)
         temp_context = self.context.copy()
         temp_context['system_prompt'] = (
             "You are an advanced AI system specializing in comprehensive self-reflection and analysis. "
             "You create frameworks that combine multiple aspects of understanding: "
             "knowledge acquisition, interaction patterns, memory formation, psychological insights, and system improvement."
         )
-        _, generated_framework, _ = chatbot_response(meta_prompt_generator, context_documents, temp_context, history)
+        _, generated_framework, _, _ = chatbot_response(meta_prompt_generator, context_documents, temp_context, history)
         
         logger.info("\n=== Generated Meta-Framework ===")
         logger.info(generated_framework)
@@ -365,12 +365,12 @@ Guidelines:
 Previously explored: {', '.join(previous_aspects) if previous_aspects else 'None'}"""
 
         # Get the dynamic prompt from the LLM
-        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context, summarize=False)
+        refs, filtered_docs, context_documents = retrieve_and_format_references(meta_cognitive_framework, self.context)
         current_conversation_refs = self._filter_references(refs, history)
         
         temp_context = self.context.copy()
         temp_context['system_prompt'] = self.reflection_system_prompt
-        _, generated_prompt, _ = chatbot_response(meta_cognitive_framework, current_conversation_refs, temp_context, history)
+        _, generated_prompt, _, _ = chatbot_response(meta_cognitive_framework, current_conversation_refs, temp_context, history)
         
         # Log everything for quality monitoring
         logger.info("\n=== LLM Generated Reflection Prompt ===")

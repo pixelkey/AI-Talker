@@ -107,8 +107,9 @@ def setup_gradio_interface(context):
             audio_path = tts_manager.text_to_speech(response)
             print("TTS generation complete")
             
-            # Update embeddings in background
+            # Update embeddings in background and start reflection
             context['embedding_updater'].update_chat_embeddings_async(history, state)
+            self_reflection.start_reflection(new_history, lambda x: None)
             
             return (
                 new_history,  # chatbot
