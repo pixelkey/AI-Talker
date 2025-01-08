@@ -520,7 +520,12 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
     for result in search_results:
         if len(all_urls) >= max_pages * 2:  # Get 2x the URLs we need
             break
-        url = result.get('link') or result.get('url') or result.get('href')
+        url = result.get('link', '')  # News search uses 'link'
+        if not url:
+            url = result.get('url', '')  # Text search might use 'url'
+        if not url:
+            url = result.get('href', '')  # Text search might use 'href'
+        
         if url and url not in urls_tried and url.startswith(('http://', 'https://')):
             all_urls.append(url)
 
@@ -539,7 +544,12 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
                 for result in alt_results:
                     if len(alt_urls) >= max_pages:
                         break
-                    url = result.get('link') or result.get('url') or result.get('href')
+                    url = result.get('link', '')  # News search uses 'link'
+                    if not url:
+                        url = result.get('url', '')  # Text search might use 'url'
+                    if not url:
+                        url = result.get('href', '')  # Text search might use 'href'
+                    
                     if url and url not in urls_tried and url.startswith(('http://', 'https://')):
                         alt_urls.append(url)
                 
@@ -629,37 +639,59 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
             result["needs_web_search"] = True
         else:
             # Evaluate if information is available in context or needs web search
-            prompt = f"""Analyze if this query requires a web search. Be strict about information availability.
+            prompt = f"""Analyze if this query requires a web search. Be very strict about avoiding unnecessary searches.
 
 Key Decision Points:
-1. Information Completeness:
+1. Query Type:
+   - Is this a conversational query (greetings, opinions, personal questions)?
+   - Is this small talk or casual conversation?
+   - Is this asking about the AI assistant's capabilities or personality?
+   
+2. Information Source:
+   - Can this be answered from common knowledge or conversation?
+   - Does this need real-time or external information?
+   - Is this asking for factual information not present in context?
+
+3. Information Completeness:
    - Does the RAG context ACTUALLY CONTAIN the specific information asked for? 
    - Just mentioning a topic/name is NOT enough - we need the specific details requested
    - If the RAG only mentions something exists but doesn't provide details, we NEED a web search
 
-2. Information Quality:
+4. Information Quality:
    - Is the information complete and detailed enough to fully answer the query?
    - Is it current enough to be reliable?
    - Do we need additional details or verification?
 
-3. Critical Assessment:
+5. Critical Assessment:
    - Don't assume information exists just because a topic is mentioned
    - If RAG only shows partial information, we should still search
    - When in doubt, prefer to search to get complete information
 
+NO Web Search Needed For:
+- Greetings (hi, hello, hey)
+- How are you / What's up
+- Thank you / You're welcome
+- Personal questions about the AI
+- Simple yes/no responses
+- Opinion questions
+- General chitchat
+- Help requests about capabilities
+- Very short follow-up questions
+
 Current Query: {query}
 RAG Summary: {rag_summary if rag_summary else "No relevant information found in RAG"}
+Recent Messages: {recent_messages[-3:] if recent_messages else "No recent messages"}
 
 Respond in this format:
 NEEDS_SEARCH: [YES/NO]
-REASON: [Explain if the EXACT information requested is actually present in the RAG context]
+REASON: [Explain why search is or isn't needed, including information completeness]
 SEARCH_TERMS: [If YES or if RAG only has partial info, provide 2-5 key search terms without quotes]"""
 
             if config.MODEL_SOURCE == "openai":
                 response = context["client"].chat.completions.create(
                     model=context["LLM_MODEL"],
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=150
+                    max_tokens=150,
                 )
                 llm_response = response.choices[0].message.content.strip()
             else:
