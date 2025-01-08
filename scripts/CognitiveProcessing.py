@@ -412,8 +412,10 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
 
 def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Determines if a web search is needed based on the user query, conversation history, and RAG summary,
-    and performs the search if necessary.
+    Determines if a web search is needed based on:
+    1. Whether information is available in RAG/LLM context
+    2. If the information needs to be current/real-time
+    3. If the query explicitly requests external information
     """
     result = {
         "needs_web_search": False,
@@ -425,46 +427,62 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
         recent_messages = []
         if "memory" in context:
             try:
-                chat_history = context["memory"].chat_memory.messages[-5:]  # Get last 5 messages
+                chat_history = context["memory"].chat_memory.messages[-5:]
                 recent_messages = [f"{msg.type}: {msg.content}" for msg in chat_history]
             except:
                 logging.warning("Could not retrieve chat history")
         
-        # First, check for explicit search requests
+        # First, check for explicit search requests or real-time information needs
         explicit_search_terms = ["search", "look up", "find", "what is", "how to", "current", "latest", "news", "weather", "price", "status"]
-        is_explicit_search = any(term in query.lower() for term in explicit_search_terms)
+        time_related_terms = ["time", "today", "now", "current", "latest"]
         
-        if is_explicit_search:
+        query_lower = query.lower()
+        is_explicit_search = any(term in query_lower for term in explicit_search_terms)
+        needs_current_time = any(term in query_lower for term in time_related_terms)
+        
+        # Immediate search for time-related queries
+        if needs_current_time and any(word in query_lower for word in ["time", "hour", "today", "now"]):
+            result["needs_web_search"] = True
+            search_query = query
+        elif is_explicit_search:
             # Use the query directly, just clean it up
-            search_query = query.lower()
+            search_query = query_lower
             for term in ["search for", "look up", "find", "what is", "how to"]:
                 search_query = search_query.replace(term, "").strip()
             result["needs_web_search"] = True
-            
         else:
-            # Use a simpler prompt that focuses on categories rather than exact formatting
-            prompt = f"""Does this query need real-time or factual information from the web? Consider these categories:
+            # Evaluate if information is available in context or needs web search
+            prompt = f"""Analyze if this query requires a web search. Be strict about information availability.
 
-1. Real-time data (weather, news, prices)
-2. Current facts or statistics
-3. Recent events or changes
-4. Location-specific information
-5. Technical or product details
+Key Decision Points:
+1. Information Completeness:
+   - Does the RAG context ACTUALLY CONTAIN the specific information asked for? 
+   - Just mentioning a topic/name is NOT enough - we need the specific details requested
+   - If the RAG only mentions something exists but doesn't provide details, we NEED a web search
 
-Recent Conversation:
-{chr(10).join(recent_messages)}
+2. Information Quality:
+   - Is the information complete and detailed enough to fully answer the query?
+   - Is it current enough to be reliable?
+   - Do we need additional details or verification?
 
-Current Query: "{query}"
-RAG Summary: {rag_summary}
+3. Critical Assessment:
+   - Don't assume information exists just because a topic is mentioned
+   - If RAG only shows partial information, we should still search
+   - When in doubt, prefer to search to get complete information
 
-First line: Answer YES or NO
-Second line: If YES, write 2-5 key search terms that consider the full conversation context"""
+Current Query: {query}
+RAG Summary: {rag_summary if rag_summary else "No relevant information found in RAG"}
+
+Respond in this format:
+NEEDS_SEARCH: [YES/NO]
+REASON: [Explain if the EXACT information requested is actually present in the RAG context]
+SEARCH_TERMS: [If YES or if RAG only has partial info, provide 2-5 key search terms without quotes]"""
 
             if config.MODEL_SOURCE == "openai":
                 response = context["client"].chat.completions.create(
                     model=context["LLM_MODEL"],
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=50
+                    max_tokens=150
                 )
                 llm_response = response.choices[0].message.content.strip()
             else:
@@ -479,25 +497,39 @@ Second line: If YES, write 2-5 key search terms that consider the full conversat
             logging.info(f"RAG Summary: {rag_summary}")
             logging.info(f"LLM Response: {llm_response}")
 
-            # Parse response - look for YES/NO in first line
+            # Parse response
             lines = [line.strip() for line in llm_response.split('\n') if line.strip()]
             if not lines:
-                # No valid response, default to using original query
+                # No valid response, default to search if RAG is empty or unclear
                 result["needs_web_search"] = True
                 search_query = query
             else:
-                first_line = lines[0].lower()
-                if "yes" in first_line:
-                    result["needs_web_search"] = True
-                    # Try to get search terms from second line, fall back to query if needed
-                    search_query = lines[1] if len(lines) > 1 else query
-                    # Clean up search query
-                    search_query = search_query.lower()
+                needs_search_line = lines[0].lower()
+                reason_line = next((line for line in lines if line.startswith("REASON:")), "")
+                
+                # Default to search if:
+                # 1. LLM says we need search
+                # 2. Reason indicates information is partial/missing
+                # 3. RAG is empty or just mentions existence without details
+                result["needs_web_search"] = (
+                    "yes" in needs_search_line or
+                    "partial" in reason_line.lower() or
+                    "only mentions" in reason_line.lower() or
+                    "doesn't provide" in reason_line.lower() or
+                    not rag_summary
+                )
+                
+                if result["needs_web_search"]:
+                    # Get search terms, prioritizing LLM's suggestion but falling back to query
+                    search_terms_line = next((line for line in lines if line.startswith("SEARCH_TERMS:")), "")
+                    if search_terms_line and len(search_terms_line.split(":")) > 1:
+                        search_query = search_terms_line.split(":", 1)[1].strip()
+                    else:
+                        search_query = query
+                        
+                    # Clean up search query - remove quotes and extra punctuation
+                    search_query = search_query.replace('"', '').replace("'", "").replace(",", "")
                     search_query = ' '.join(search_query.split()[:5])  # Limit to 5 words
-                else:
-                    result["needs_web_search"] = False
-                    search_query = ""
-        
         # Perform web search if needed
         if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
@@ -571,7 +603,7 @@ Response format:
 RELEVANT: [yes/no]
 SUMMARY: [1-2 sentence summary of ONLY the relevant content, or 'NOT_RELEVANT' if nothing relevant found]
 
-Example:
+Example response:
 If the RAG context only contains references or chat history that's not directly relevant, respond with:
 RELEVANT: no
 SUMMARY: NOT_RELEVANT"""
