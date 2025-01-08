@@ -7,6 +7,7 @@ from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 import requests
 import json
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -145,23 +146,38 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
         logger.error(f"Error summarizing RAG results: {str(e)}")
         return "" if not context_documents else context_documents[0].get('content', '') if isinstance(context_documents[0], dict) else context_documents[0].page_content
 
-def perform_web_search(search_query: str, ddgs: DDGS, max_depth: int = 1, current_depth: int = 0) -> List[Dict]:
+def perform_web_search(search_query: str, ddgs: DDGS, max_depth: int = 1, current_depth: int = 0, max_retries: int = 3, retry_delay: int = 2):
     """
-    Perform web search with potential recursive follow-up.
+    Perform web search with retries and pagination.
     Returns a list of search results.
     """
-    try:
-        # Try news search first with more results
-        search_results = list(ddgs.news(search_query, max_results=5))
-        if not search_results:
-            # Fallback to text search if no news results
-            logging.info("No news results, falling back to text search")
+    results = []
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            # Get search results with pagination
             search_results = list(ddgs.text(search_query, max_results=10))
-        
-        return search_results
-    except Exception as e:
-        logging.error(f"Error in web search: {str(e)}")
-        return []
+            if search_results:
+                results.extend(search_results)
+                return results
+            
+            # If we get here with no results but haven't exceeded retries
+            retry_count += 1
+            if retry_count < max_retries:
+                time.sleep(retry_delay)
+                logging.info(f"Retrying search (attempt {retry_count + 1}/{max_retries})")
+                
+        except Exception as e:
+            logging.error(f"Search attempt {retry_count + 1} failed: {str(e)}")
+            retry_count += 1
+            if retry_count < max_retries:
+                time.sleep(retry_delay)
+                logging.info(f"Retrying after error (attempt {retry_count + 1}/{max_retries})")
+            else:
+                raise
+    
+    return results
 
 def evaluate_search_results(results: List[Dict], original_query: str, context: Dict) -> Tuple[bool, str, List[Dict]]:
     """
@@ -387,28 +403,111 @@ EXCERPT: [If relevant, include the most pertinent information here. Otherwise wr
     
     return is_relevant, excerpt
 
-def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict) -> str:
+def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict, max_pages: int = 3) -> str:
     """
     Get detailed content from web pages based on search results.
-    Returns relevant content from the pages.
+    If initial results aren't sufficient, tries alternative search strategies.
     """
-    detailed_content = []
+    all_content = []
+    pages_scraped = 0
+    urls_tried = set()
     
-    # Try to scrape and evaluate content from each result
-    for result in search_results[:3]:  # Limit to top 3 results
-        url = result.get('link') or result.get('url') or result.get('href')
-        if not url:
-            continue
-            
-        content = scrape_webpage(url)
-        if not content:
-            continue
-            
-        is_relevant, excerpt = evaluate_content_relevance(content, query, context)
-        if is_relevant and excerpt:
-            detailed_content.append(f"From {url}:\n{excerpt}")
-    
-    return "\n\n".join(detailed_content) if detailed_content else ""
+    def try_scrape_page(url: str) -> Optional[str]:
+        if url in urls_tried:
+            return None
+        urls_tried.add(url)
+        try:
+            content = scrape_webpage(url)
+            if content:
+                is_relevant, excerpt = evaluate_content_relevance(content, query, context)
+                if is_relevant:
+                    return excerpt
+        except Exception as e:
+            logging.warning(f"Error scraping {url}: {str(e)}")
+        return None
+
+    def process_results(results: List[Dict], start_idx: int = 0) -> Tuple[List[str], int]:
+        content_found = []
+        pages_processed = 0
+        
+        for result in results[start_idx:]:
+            if pages_processed >= max_pages:
+                break
+                
+            content = try_scrape_page(result.get('link'))
+            if content:
+                content_found.append(content)
+                pages_processed += 1
+                
+        return content_found, pages_processed
+
+    # Try initial results
+    initial_content, pages_scraped = process_results(search_results)
+    all_content.extend(initial_content)
+
+    # If we haven't found enough relevant content, try next batch of results
+    if pages_scraped < max_pages and len(search_results) > max_pages:
+        next_content, additional_pages = process_results(search_results, max_pages)
+        all_content.extend(next_content)
+        pages_scraped += additional_pages
+
+    # If still not enough content, try alternative search queries
+    if not all_content or pages_scraped < max_pages:
+        # Generate alternative search queries
+        alt_queries = generate_alternative_queries(query, context)
+        
+        for alt_query in alt_queries:
+            if pages_scraped >= max_pages:
+                break
+                
+            try:
+                with DDGS() as ddgs:
+                    alt_results = perform_web_search(alt_query, ddgs)
+                    if alt_results:
+                        alt_content, additional_pages = process_results(alt_results)
+                        all_content.extend(alt_content)
+                        pages_scraped += additional_pages
+            except Exception as e:
+                logging.warning(f"Error with alternative query '{alt_query}': {str(e)}")
+
+    return "\n\n".join(all_content) if all_content else ""
+
+def generate_alternative_queries(original_query: str, context: Dict[str, Any]) -> List[str]:
+    """
+    Generate alternative search queries if the original doesn't yield good results.
+    """
+    prompt = f"""Generate 2-3 alternative search queries that might find relevant information.
+Make them more specific or use different terms. Remove any unnecessary words.
+Original query: {original_query}
+
+Format each query on a new line, no quotes or punctuation.
+Example:
+query term1 term2
+another search query
+final search terms"""
+
+    try:
+        if config.MODEL_SOURCE == "openai":
+            response = context["client"].chat.completions.create(
+                model=context["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100
+            )
+            alt_queries = response.choices[0].message.content.strip().split('\n')
+        else:
+            response = context["client"].chat(
+                model=context["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}],
+            )
+            alt_queries = response['message']['content'].strip().split('\n')
+        
+        # Clean up queries
+        alt_queries = [q.strip().replace('"', '').replace("'", "").replace(",", "") for q in alt_queries if q.strip()]
+        return alt_queries[:3]  # Limit to top 3 alternatives
+        
+    except Exception as e:
+        logging.error(f"Error generating alternative queries: {str(e)}")
+        return []
 
 def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
