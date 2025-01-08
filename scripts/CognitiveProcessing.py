@@ -668,15 +668,14 @@ Key Decision Points:
    - When in doubt, prefer to search to get complete information
 
 NO Web Search Needed For:
-- Greetings (hi, hello, hey)
-- How are you / What's up
-- Thank you / You're welcome
+- Greetings and farewells
+- Questions about feelings or opinions
 - Personal questions about the AI
 - Simple yes/no responses
-- Opinion questions
-- General chitchat
-- Help requests about capabilities
+- Questions about capabilities
 - Very short follow-up questions
+- General chitchat
+- Anything that can be answered from conversation history
 
 Current Query: {query}
 RAG Summary: {rag_summary if rag_summary else "No relevant information found in RAG"}
@@ -692,6 +691,7 @@ SEARCH_TERMS: [If YES or if RAG only has partial info, provide 2-5 key search te
                     model=context["LLM_MODEL"],
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=150,
+                    temperature=0.1  # Lower temperature for more consistent decisions
                 )
                 llm_response = response.choices[0].message.content.strip()
             else:
