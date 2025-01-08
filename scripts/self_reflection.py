@@ -74,7 +74,7 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 reflection_history = []
-                MAX_REFLECTIONS = 0 # Set the maximum number of reflections
+                MAX_REFLECTIONS = 7 # Set the maximum number of reflections
                 
                 while not self.stop_reflection.is_set() and reflection_count < MAX_REFLECTIONS:
                     # Check GPU temperature before proceeding

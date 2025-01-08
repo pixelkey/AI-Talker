@@ -383,7 +383,7 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
             # Use LLM to optimize the search query
             prompt = f"""Convert this search request into a concise and effective search query (2-5 words).
 Focus on the key terms that will yield the most relevant results.
-Do not include any quotes in your response.
+DO NOT include any quotes or special characters unless they are ABSOLUTELY necessary for an exact phrase search.
 
 Search request: {search_topic}
 
@@ -391,6 +391,7 @@ Respond with ONLY the optimized search query, no quotes. Examples:
 funny jokes trending 2025
 current weather Sydney
 SpaceX latest launch news
+Perth WA weather today
 """
             if config.MODEL_SOURCE == "openai":
                 response = context["client"].chat.completions.create(
@@ -467,16 +468,15 @@ Consider these factors:
 5. Is this something that should be fact-checked rather than relying on general knowledge?
 
 Respond with EXACTLY one of these two formats:
-1. If web search is needed (which it is for most factual queries): A concise search query (2-5 words)
+1. If web search is needed (which it is for most factual queries): A concise search query (2-5 words, no quotes)
 2. If no web search is needed: "NO_SEARCH_NEEDED"
 
 Example responses:
-- "weather Perth WA"          (current conditions)
-- "Tesla stock price"         (market data)
-- "iPhone 15 specifications"  (product facts)
-- "Australia population 2025" (current statistics)
-- "NO_SEARCH_NEEDED"         (general knowledge like "what is photosynthesis")
-"""},
+weather Perth WA          (current conditions)
+Tesla stock price         (market data)
+iPhone 15 specifications  (product facts)
+Australia population 2025 (current statistics)
+NO_SEARCH_NEEDED         (general knowledge like "what is photosynthesis")"""},
                 {"role": "user", "content": f"User Query: {query}\nRAG Summary: {rag_summary}\n\nDoes this query need a web search? Respond in the format specified above:"}
             ]
             
@@ -546,15 +546,15 @@ Consider these factors:
 5. Is this something that should be fact-checked rather than relying on general knowledge?
 
 Respond with EXACTLY one of these two formats:
-1. If web search is needed (which it is for most factual queries): A concise search query (2-5 words)
+1. If web search is needed (which it is for most factual queries): A concise search query (2-5 words, no quotes)
 2. If no web search is needed: "NO_SEARCH_NEEDED"
 
 Example responses:
-- "weather Perth WA"          (current conditions)
-- "Tesla stock price"         (market data)
-- "iPhone 15 specifications"  (product facts)
-- "Australia population 2025" (current statistics)
-- "NO_SEARCH_NEEDED"         (general knowledge like "what is photosynthesis")
+weather Perth WA          (current conditions)
+Tesla stock price         (market data)
+iPhone 15 specifications  (product facts)
+Australia population 2025 (current statistics)
+NO_SEARCH_NEEDED         (general knowledge like "what is photosynthesis")
 
 User Query: {query}
 RAG Summary: {rag_summary}
@@ -581,21 +581,25 @@ Does this query need a web search? Respond in the format specified above:"""
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
             # Create DDGS instance
-            ddgs = DDGS()
+            with DDGS() as ddgs:
+                search_results = perform_web_search(search_query, ddgs)
+                
+            logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
-            # Perform initial search
-            search_results = perform_web_search(search_query, ddgs)
+            # Initialize filtered results
+            filtered_results = []
+            web_content = []
             
-            # Evaluate results and potentially do a follow-up search
+            # Process search results
+            if not search_results:
+                logging.warning("No search results found")
+                result["web_results"] = "No search results found."
+                return result
+                
+            # Evaluate search results for relevance
             needs_followup, followup_query, filtered_results = evaluate_search_results(search_results, query, context)
             
-            if needs_followup and followup_query:
-                logging.info(f"Initial results not relevant, trying follow-up search with: {followup_query}")
-                followup_results = perform_web_search(followup_query, ddgs)
-                _, _, filtered_results = evaluate_search_results(followup_results, query, context)
-            
-            # Process the results
-            web_content = []
+            # Process each filtered result
             for result_item in filtered_results:
                 try:
                     # Extract title and link from search result
