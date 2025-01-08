@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 import requests
 import json
 import time
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
+import random
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -146,6 +149,43 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
         logger.error(f"Error summarizing RAG results: {str(e)}")
         return "" if not context_documents else context_documents[0].get('content', '') if isinstance(context_documents[0], dict) else context_documents[0].page_content
 
+def perform_parallel_web_search(queries: List[str], context: Dict, max_retries: int = 3, retry_delay: int = 2) -> List[Dict]:
+    """Perform multiple web searches in parallel"""
+    all_results = []
+    
+    def search_with_retry(query: str) -> List[Dict]:
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=10))
+                    if results:
+                        return results
+                retry_count += 1
+                if retry_count < max_retries:
+                    time.sleep(retry_delay)
+                    logging.info(f"Retrying search for '{query}' (attempt {retry_count + 1}/{max_retries})")
+            except Exception as e:
+                logging.error(f"Search attempt {retry_count + 1} for '{query}' failed: {str(e)}")
+                retry_count += 1
+                if retry_count < max_retries:
+                    time.sleep(retry_delay)
+        return []
+
+    # Run searches in parallel
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_query = {executor.submit(search_with_retry, query): query for query in queries}
+        for future in concurrent.futures.as_completed(future_to_query):
+            query = future_to_query[future]
+            try:
+                results = future.result()
+                if results:
+                    all_results.extend(results)
+            except Exception as e:
+                logging.error(f"Error in parallel search for '{query}': {str(e)}")
+    
+    return all_results
+
 def perform_web_search(search_query: str, ddgs: DDGS, max_depth: int = 1, current_depth: int = 0, max_retries: int = 3, retry_delay: int = 2):
     """
     Perform web search with retries and pagination.
@@ -275,11 +315,26 @@ def scrape_webpage(url: str) -> Optional[str]:
     Returns cleaned text content or None if scraping fails.
     """
     try:
-        # Download webpage with a reasonable timeout
+        # Small delay to avoid overwhelming servers, shorter now due to parallel processing
+        time.sleep(random.uniform(0.1, 0.3))
+        
         response = requests.get(url, timeout=10, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
-        response.raise_for_status()
+        
+        # Handle common HTTP errors
+        if response.status_code == 403:
+            logging.warning(f"403 Forbidden error for {url}. Trying with different user agent...")
+            # For 403 errors, we still want a longer delay
+            time.sleep(random.uniform(1.0, 2.0))
+            # Retry with different user agent
+            response = requests.get(url, timeout=10, headers={
+                'User-Agent': random.choice([
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+                ])
+            })
         
         # Parse with BeautifulSoup
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -406,11 +461,9 @@ EXCERPT: [If relevant, include the most pertinent information here. Otherwise wr
 def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict, max_pages: int = 3, timeout_seconds: int = 30) -> str:
     """
     Get detailed content from web pages based on search results.
-    If initial results aren't sufficient, tries alternative search strategies.
-    Times out after specified seconds.
+    Uses ThreadPoolExecutor for parallel processing with improved concurrency.
     """
     all_content = []
-    pages_scraped = 0
     urls_tried = set()
     start_time = time.time()
     
@@ -420,21 +473,14 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
             logging.warning(f"Web search timed out after {elapsed:.1f} seconds")
             return True
         return False
-    
-    def try_scrape_page(url: str) -> Optional[str]:
-        if is_timed_out():
+
+    def process_single_url(url: str) -> Optional[str]:
+        """Process a single URL with existing scrape_webpage function"""
+        if is_timed_out() or not url or url in urls_tried:
             return None
             
-        # Skip if URL is None or invalid
-        if not url or not isinstance(url, str):
-            return None
-            
-        # Validate URL format
         if not url.startswith(('http://', 'https://')):
             logging.warning(f"Invalid URL format: {url}")
-            return None
-            
-        if url in urls_tried:
             return None
             
         urls_tried.add(url)
@@ -445,61 +491,60 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
                 if is_relevant:
                     return excerpt
         except Exception as e:
-            logging.warning(f"Error scraping {url}: {str(e)}")
+            logging.warning(f"Error processing {url}: {str(e)}")
         return None
 
-    def process_results(results: List[Dict], start_idx: int = 0) -> Tuple[List[str], int]:
-        if is_timed_out():
-            return [], 0
+    def process_urls_parallel(urls: List[str]) -> None:
+        """Process URLs in parallel, adding results as they complete"""
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_url = {executor.submit(process_single_url, url): url for url in urls}
             
-        content_found = []
-        pages_processed = 0
-        
-        for result in results[start_idx:]:
-            if is_timed_out() or pages_processed >= max_pages:
-                break
+            # Process results as they complete instead of waiting for all
+            for future in concurrent.futures.as_completed(future_to_url):
+                if is_timed_out() or len(all_content) >= max_pages:
+                    # Cancel remaining futures if we have enough content
+                    for f in future_to_url:
+                        f.cancel()
+                    break
                 
-            # Get URL from result, checking multiple possible keys
-            url = result.get('link') or result.get('url') or result.get('href')
-            if not url:
-                logging.warning(f"No valid URL found in result: {result}")
-                continue
-                
-            content = try_scrape_page(url)
-            if content:
-                content_found.append(content)
-                pages_processed += 1
-                
-        return content_found, pages_processed
+                url = future_to_url[future]
+                try:
+                    result = future.result()
+                    if result:
+                        all_content.append(result)
+                except Exception as e:
+                    logging.error(f"Error processing {url}: {str(e)}")
 
-    # Try initial results
-    initial_content, pages_scraped = process_results(search_results)
-    all_content.extend(initial_content)
+    # Get all valid URLs upfront
+    all_urls = []
+    for result in search_results:
+        if len(all_urls) >= max_pages * 2:  # Get 2x the URLs we need
+            break
+        url = result.get('link') or result.get('url') or result.get('href')
+        if url and url not in urls_tried and url.startswith(('http://', 'https://')):
+            all_urls.append(url)
 
-    # If we haven't found enough relevant content and haven't timed out, try next batch
-    if not is_timed_out() and pages_scraped < max_pages and len(search_results) > max_pages:
-        next_content, additional_pages = process_results(search_results, max_pages)
-        all_content.extend(next_content)
-        pages_scraped += additional_pages
+    # Process initial batch
+    if all_urls:
+        process_urls_parallel(all_urls)
 
-    # If still not enough content and haven't timed out, try alternative queries
-    if not is_timed_out() and (not all_content or pages_scraped < max_pages):
-        # Generate alternative search queries
+    # If we need more content, try alternative queries
+    if not is_timed_out() and len(all_content) < max_pages:
         alt_queries = generate_alternative_queries(query, context)
-        
-        for alt_query in alt_queries:
-            if is_timed_out() or pages_scraped >= max_pages:
-                break
+        if alt_queries:
+            # Perform alternative searches in parallel
+            alt_results = perform_parallel_web_search(alt_queries, context)
+            if alt_results:
+                alt_urls = []
+                for result in alt_results:
+                    if len(alt_urls) >= max_pages:
+                        break
+                    url = result.get('link') or result.get('url') or result.get('href')
+                    if url and url not in urls_tried and url.startswith(('http://', 'https://')):
+                        alt_urls.append(url)
                 
-            try:
-                with DDGS() as ddgs:
-                    alt_results = perform_web_search(alt_query, ddgs)
-                    if alt_results:
-                        alt_content, additional_pages = process_results(alt_results)
-                        all_content.extend(alt_content)
-                        pages_scraped += additional_pages
-            except Exception as e:
-                logging.warning(f"Error with alternative query '{alt_query}': {str(e)}")
+                if alt_urls:
+                    process_urls_parallel(alt_urls)
 
     elapsed = time.time() - start_time
     logging.info(f"Web search completed in {elapsed:.1f} seconds, found {len(all_content)} relevant results")
