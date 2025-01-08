@@ -32,7 +32,8 @@ class ChatHistoryManager:
                 # Extract timestamp from messages if present
                 user_timestamp = None
                 if '[' in user_msg and ']' in user_msg:
-                    user_timestamp = user_msg[user_msg.find('[')+1:user_msg.find(']')]
+                    timestamp_line = user_msg.split('\n')[0]  # Get first line containing timestamp
+                    user_timestamp = timestamp_line[timestamp_line.find('[')+1:timestamp_line.find(']')]
                 
                 # Only save pairs where both messages exist
                 if user_msg and assistant_msg:
@@ -51,7 +52,7 @@ class ChatHistoryManager:
         formatted_texts = []
         for user_msg, assistant_msg in messages:
             if user_msg:
-                formatted_texts.append(user_msg)  # Already includes timestamp
+                formatted_texts.append(user_msg)  # Already includes timestamp and newline
             if assistant_msg:
                 # Remove reference sections if they exist, but keep timestamp
                 response = assistant_msg.split("References:", 1)[0].strip()

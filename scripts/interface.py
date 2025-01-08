@@ -84,7 +84,7 @@ def setup_gradio_interface(context):
             chat_manager = context['chat_manager']
 
             # Set current time in context
-            context['current_time'] = '2025-01-08T15:03:44+10:30'  # Using the provided time
+            context['current_time'] = '2025-01-08T15:10:11+10:30'  # Using the provided time
             
             # Get references and generate response
             refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
@@ -95,8 +95,8 @@ def setup_gradio_interface(context):
             # Format messages with timestamp
             dt = parse_timestamp(context['current_time'])
             formatted_time = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
-            user_msg = f"[{formatted_time}] User: {input_text}"
-            bot_msg = f"[{formatted_time}] Bot: {response}"
+            user_msg = f"[{formatted_time}]\nUser: {input_text}"
+            bot_msg = f"[{formatted_time}]\nBot: {response}"
             
             # Update history with the new user and bot messages
             new_history = history + [(user_msg, bot_msg)]
