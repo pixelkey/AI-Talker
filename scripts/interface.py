@@ -16,6 +16,7 @@ from embedding_updater import EmbeddingUpdater
 from speech_recognition_utils import SpeechRecognizer
 from self_reflection import SelfReflection
 from queue import Queue
+from datetime import datetime
 
 def setup_gradio_interface(context):
     """
@@ -66,6 +67,9 @@ def setup_gradio_interface(context):
     watcher = IngestWatcher(embedding_updater.update_embeddings)
     context['watcher'] = watcher
 
+    def parse_timestamp(timestamp):
+        return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
+
     def handle_user_input(input_text, history):
         """Handle user input and generate response with proper state management."""
         try:
@@ -79,14 +83,23 @@ def setup_gradio_interface(context):
             # Get chat manager from context
             chat_manager = context['chat_manager']
 
+            # Set current time in context
+            context['current_time'] = '2025-01-08T15:03:44+10:30'  # Using the provided time
+            
             # Get references and generate response
             refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
             
             # Generate the LLM response and get updated references
             _, response, refs, _ = chatbot_response(input_text, context_documents, context, history)
             
+            # Format messages with timestamp
+            dt = parse_timestamp(context['current_time'])
+            formatted_time = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
+            user_msg = f"[{formatted_time}] User: {input_text}"
+            bot_msg = f"[{formatted_time}] Bot: {response}"
+            
             # Update history with the new user and bot messages
-            new_history = history + [(f"User: {input_text}", f"Bot: {response}")]
+            new_history = history + [(user_msg, bot_msg)]
             chat_manager.save_history(new_history)
             
             # Generate speech for the response

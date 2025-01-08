@@ -1,11 +1,13 @@
 # scripts/chatbot_functions.py
 
+import os
 import logging
 from faiss_utils import similarity_search_with_score
 from document_processing import normalize_text
 from CognitiveProcessing import summarize_rag_results, determine_and_perform_web_search
 import config
 from typing import Tuple, Dict, List
+from datetime import datetime, timezone, timedelta
 
 def retrieve_and_format_references(input_text: str, context: Dict) -> Tuple[str, List[Dict], str]:
     """
@@ -46,6 +48,19 @@ def chatbot_response(input_text, context_documents, context, history):
     Returns:
         Tuple: Updated chat history, LLM response, references, and cleared input.
     """
+    # Get current time from context and parse it
+    current_time = context.get('current_time', '')
+    try:
+        dt = parse_timestamp(current_time)
+        formatted_time = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
+    except (ValueError, TypeError):
+        formatted_time = current_time
+    
+    # Format chat history with timestamps
+    formatted_history = format_chat_history(history, current_time)
+    if formatted_history:
+        formatted_history = f"Conversation History:\n{formatted_history}\n"
+    
     # Get initial references and context documents (RAG results already evaluated for relevance)
     references, filtered_docs, initial_context = retrieve_and_format_references(input_text, context)
     
@@ -58,6 +73,10 @@ def chatbot_response(input_text, context_documents, context, history):
     # Initialize final references and context
     final_references = []
     final_context = []
+    
+    # Add formatted history to context
+    if formatted_history:
+        final_context.append(formatted_history)
     
     # Add RAG results if they exist
     if references:
@@ -136,10 +155,14 @@ def format_references(filtered_docs: List[Dict], context: Dict = None) -> str:
     if not filtered_docs:
         return ""
 
-    # Format each document with consistent numbering and metadata
+    # Format each document with consistent numbering, metadata, and timestamps
     formatted_refs = []
     for idx, doc in enumerate(filtered_docs, 1):
-        ref = f"{idx}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}\n{doc['content']}"
+        # Extract timestamp from metadata if available
+        timestamp = doc['metadata'].get('timestamp', '')
+        timestamp_str = f" | {timestamp}" if timestamp else ""
+        
+        ref = f"{idx}. Context Document {doc['metadata'].get('doc_id', '')} - Chunk {doc['id']} | Path: {doc['metadata'].get('filepath', '')}/{doc['metadata'].get('filename', '')}{timestamp_str}\n{doc['content']}"
         formatted_refs.append(ref)
 
     return "\n\n".join(formatted_refs)
@@ -342,3 +365,71 @@ def clear_history(context, history):
     except Exception as e:
         logging.error(f"Error clearing history: {e}")
         return history, "", ""
+
+def parse_timestamp(timestamp_str: str) -> datetime:
+    """
+    Parse an ISO format timestamp string into a datetime object.
+    Handles both basic ISO format and extended formats.
+    """
+    try:
+        # Remove the 'T' separator if present
+        timestamp_str = timestamp_str.replace('T', ' ')
+        
+        # Split into date, time, and timezone parts
+        date_time = timestamp_str.rsplit('+', 1)[0].rsplit('-', 1)[0].strip()
+        
+        # Parse the main part
+        dt = datetime.strptime(date_time, '%Y-%m-%d %H:%M:%S')
+        
+        # Handle timezone if present
+        if '+' in timestamp_str:
+            # Extract hours and minutes from timezone
+            tz = timestamp_str.split('+')[1]
+            if ':' in tz:
+                h, m = map(int, tz.split(':'))
+            else:
+                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=h, minutes=m)))
+        elif timestamp_str.count('-') > 2:  # Has negative timezone
+            tz = timestamp_str.split('-')[-1]
+            if ':' in tz:
+                h, m = map(int, tz.split(':'))
+            else:
+                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=-h, minutes=-m)))
+            
+        return dt
+    except Exception as e:
+        logging.error(f"Error parsing timestamp {timestamp_str}: {e}")
+        return datetime.now().astimezone()
+
+def format_chat_history(history: List[str], current_time: str) -> str:
+    """
+    Format chat history with timestamps including weekday.
+    Args:
+        history: List of chat messages
+        current_time: Current timestamp from the user's machine
+    Returns:
+        Formatted chat history string
+    """
+    if not history:
+        return ""
+    
+    formatted_history = []
+    for i, msg in enumerate(history):
+        # Get timestamp from message metadata if available, otherwise use current time
+        timestamp = msg.get('timestamp', current_time) if isinstance(msg, dict) else current_time
+        try:
+            # Parse the timestamp and format with weekday
+            dt = parse_timestamp(timestamp)
+            formatted_time = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
+            role = "User" if i % 2 == 0 else "Bot"
+            content = msg['content'] if isinstance(msg, dict) else msg
+            formatted_history.append(f"[{formatted_time}] {role}: {content}")
+        except (ValueError, TypeError) as e:
+            # Fallback if timestamp parsing fails
+            role = "User" if i % 2 == 0 else "Bot"
+            content = msg['content'] if isinstance(msg, dict) else msg
+            formatted_history.append(f"[{timestamp}] {role}: {content}")
+    
+    return "\n".join(formatted_history)

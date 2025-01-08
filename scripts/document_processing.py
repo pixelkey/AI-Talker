@@ -10,6 +10,7 @@ from nltk import download as nltk_download
 import re
 import json
 from dotenv import load_dotenv
+from datetime import datetime, timezone, timedelta
 
 # Set NLTK data path to local directory and disable downloads
 nltk_data_dir = os.path.join(os.path.dirname(__file__), '..', 'nltk_data')
@@ -206,18 +207,71 @@ def load_json_content(file_path):
         file_path (str): The path to the JSON file.
     
     Returns:
-        str: The formatted JSON content, or empty string if content is empty or invalid.
+        tuple: (formatted content string, timestamp if found in JSON)
     """
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, 'r') as f:
             data = json.load(f)
-            return json.dumps(data, indent=2)
-    except json.JSONDecodeError as e:
-        logging.error(f"Error decoding JSON file {file_path}: {str(e)}")
-        return ""
+            
+        if not data:
+            return "", None
+            
+        # Try to extract timestamp from JSON data
+        timestamp = None
+        if isinstance(data, dict):
+            timestamp = data.get('timestamp')
+        elif isinstance(data, list) and data and isinstance(data[0], dict):
+            timestamp = data[0].get('timestamp')
+            
+        # Format the content
+        if isinstance(data, dict):
+            content = json.dumps(data, indent=2)
+        elif isinstance(data, list):
+            content = "\n".join(json.dumps(item, indent=2) for item in data)
+        else:
+            content = str(data)
+            
+        return content, timestamp
     except Exception as e:
-        logging.error(f"Error reading file {file_path}: {str(e)}")
-        return ""
+        logging.error(f"Error loading JSON file {file_path}: {e}")
+        return "", None
+
+def parse_timestamp(timestamp_str: str) -> datetime:
+    """
+    Parse an ISO format timestamp string into a datetime object.
+    Handles both basic ISO format and extended formats.
+    """
+    try:
+        # Remove the 'T' separator if present
+        timestamp_str = timestamp_str.replace('T', ' ')
+        
+        # Split into date, time, and timezone parts
+        date_time = timestamp_str.rsplit('+', 1)[0].rsplit('-', 1)[0].strip()
+        
+        # Parse the main part
+        dt = datetime.strptime(date_time, '%Y-%m-%d %H:%M:%S')
+        
+        # Handle timezone if present
+        if '+' in timestamp_str:
+            # Extract hours and minutes from timezone
+            tz = timestamp_str.split('+')[1]
+            if ':' in tz:
+                h, m = map(int, tz.split(':'))
+            else:
+                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=h, minutes=m)))
+        elif timestamp_str.count('-') > 2:  # Has negative timezone
+            tz = timestamp_str.split('-')[-1]
+            if ':' in tz:
+                h, m = map(int, tz.split(':'))
+            else:
+                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=-h, minutes=-m)))
+            
+        return dt
+    except Exception as e:
+        logging.error(f"Error parsing timestamp {timestamp_str}: {e}")
+        return datetime.now().astimezone()
 
 def load_single_document(file_path, chunk_size_max):
     """
@@ -228,44 +282,81 @@ def load_single_document(file_path, chunk_size_max):
         chunk_size_max (int): The maximum size of each text chunk.
         
     Returns:
-        list: List of chunks with metadata, or empty list if file cannot be processed.
+        tuple: (List of chunks with metadata, timestamp)
     """
-    file_ext = os.path.splitext(file_path)[1].lower()
-    SUPPORTED_EXTENSIONS = {
-        ".txt": "text",
-        ".json": "text",
-        ".md": "text",
-        ".py": "text",
-        ".js": "text",
-        ".html": "text",
-        ".css": "text",
-        ".yaml": "text",
-        ".yml": "text",
-    }
+    filename = os.path.basename(file_path)
+    ext = os.path.splitext(filename)[1].lower()
     
-    if file_ext not in SUPPORTED_EXTENSIONS:
-        logging.info(f"Unsupported file type: {file_path}")
-        return []
+    try:
+        # Get file modification time and format with weekday
+        mtime = os.path.getmtime(file_path)
+        dt = datetime.fromtimestamp(mtime).astimezone()
+        file_timestamp = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
         
-    # Load content based on file type
-    if SUPPORTED_EXTENSIONS[file_ext] == "json":
-        content = load_json_content(file_path)
-    else:
-        content = load_file_content(file_path)
-    
-    # Skip files with no content or only whitespace
-    if not content or not content.strip():
-        logging.info(f"Skipping empty file: {file_path}")
-        return []
+        content = ""
+        json_timestamp = None
+        
+        if ext == '.json':
+            content, json_timestamp = load_json_content(file_path)
+            # If JSON timestamp exists, format it with weekday
+            if json_timestamp:
+                try:
+                    dt = parse_timestamp(json_timestamp)
+                    json_timestamp = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
+                except (ValueError, TypeError):
+                    pass
+        else:
+            content = load_file_content(file_path)
+        
+        if not content:
+            return [], None
+            
+        # Normalize the content
+        normalized_content = normalize_text(content)
+        
+        # Create chunks
+        chunks = chunk_text_hybrid(normalized_content, chunk_size_max)
+        
+        # Use JSON timestamp if available, otherwise use file modification time
+        timestamp = json_timestamp if json_timestamp else file_timestamp
+        
+        return chunks, timestamp
+    except Exception as e:
+        logging.error(f"Error processing file {file_path}: {e}")
+        return [], None
 
-    chunks = chunk_text_hybrid(content, chunk_size_max)
+def create_document_entries(doc_id, filename, filepath, chunks, timestamp=None):
+    """
+    Create document entries with unique IDs for each chunk, including file path and timestamp.
     
-    # Skip if no chunks were created
-    if not chunks:
-        logging.info(f"No chunks created for file: {file_path}")
-        return []
-        
-    return chunks
+    Args:
+        doc_id (int): The document ID (unused, kept for backward compatibility).
+        filename (str): The filename of the document.
+        filepath (str): The relative path of the document.
+        chunks (list): The chunks of text content and their token counts.
+        timestamp (str): The timestamp for the document.
+    
+    Returns:
+        list: List of document dictionaries with chunk ID, document ID, content, filename, filepath, timestamp, token count, and overlap metadata.
+    """
+    # Create document ID by combining filepath and filename
+    full_doc_id = os.path.join(filepath, filename) if filepath != '.' else filename
+    # Sanitize the document ID (only replaces spaces with underscores)
+    safe_doc_id = sanitize_id(full_doc_id)
+    
+    return [
+        {
+            "id": f"{safe_doc_id}#chunk{chunk_idx}",  # Unique chunk ID that includes the document path
+            "doc_id": safe_doc_id,  # Document ID is the full relative path with spaces replaced
+            "content": chunk,
+            "filename": filename,
+            "filepath": filepath,
+            "timestamp": timestamp,  # Add timestamp to metadata
+            "chunk_size": chunk_size,  # The token count of the chunk
+            "overlap_size": overlap_size  # The token count of the overlap
+        }
+        for chunk_idx, (chunk, chunk_size, overlap_size) in enumerate(chunks)
+    ]
 
 def load_documents_from_folder(folder_path, chunk_size_max):
     """
@@ -278,54 +369,23 @@ def load_documents_from_folder(folder_path, chunk_size_max):
     Returns:
         list: List of document dictionaries containing the content and metadata.
     """
-    SUPPORTED_EXTENSIONS = {
-        ".txt": "text",
-        ".json": "text",
-        ".md": "text",
-        ".py": "text",
-        ".js": "text",
-        ".html": "text",
-        ".css": "text",
-        ".yaml": "text",
-        ".yml": "text",
-    }
     documents = []
+    supported_extensions = {'.txt', '.json'}  # Add more supported extensions as needed
     
-    # Traverse the directory tree and find all supported files
-    for root, dirs, files in os.walk(folder_path):
+    for root, _, files in os.walk(folder_path):
         for filename in files:
-            file_ext = os.path.splitext(filename)[1].lower()
-            if file_ext in SUPPORTED_EXTENSIONS:
+            if os.path.splitext(filename)[1].lower() in supported_extensions:
                 file_path = os.path.join(root, filename)
-                
-                # Load content based on file type
-                if SUPPORTED_EXTENSIONS[file_ext] == "json":
-                    content = load_json_content(file_path)
-                else:
-                    content = load_file_content(file_path)
-                
-                # Skip files with no content or only whitespace
-                if not content or not content.strip():
-                    logging.info(f"Skipping empty file: {os.path.join(os.path.relpath(root, folder_path), filename)}")
-                    continue
-
-                chunks = chunk_text_hybrid(content, chunk_size_max)
-                
-                # Skip if no chunks were created
-                if not chunks:
-                    logging.info(f"No chunks created for file: {os.path.join(os.path.relpath(root, folder_path), filename)}")
-                    continue
-
-                # Get Relative path to the file from the root folder and don't include the file name
                 relative_path = os.path.relpath(root, folder_path)
-
-                # Pass 0 as doc_id since it's no longer used (kept for backward compatibility)
-                documents.extend(create_document_entries(0, filename, relative_path, chunks))
-                logging.info(f"Loaded and chunked document {relative_path}/{filename} into {len(chunks)} chunks")
-    
-    if not documents:
-        logging.warning(f"No supported documents found in the folder: {folder_path}")
-        logging.info(f"Supported file types: {', '.join(SUPPORTED_EXTENSIONS.keys())}")
+                
+                # Load document and get chunks with timestamp
+                chunks, timestamp = load_single_document(file_path, chunk_size_max)
+                if chunks:
+                    # Create document entries with timestamp
+                    doc_entries = create_document_entries(
+                        len(documents), filename, relative_path, chunks, timestamp
+                    )
+                    documents.extend(doc_entries)
     
     return documents
 
@@ -342,34 +402,3 @@ def sanitize_id(id_str):
     """
     # Replace spaces with underscores, keep dots and slashes
     return id_str.replace(' ', '_')
-
-def create_document_entries(doc_id, filename, filepath, chunks):
-    """
-    Create document entries with unique IDs for each chunk, including file path.
-    
-    Args:
-        doc_id (int): The document ID (unused, kept for backward compatibility).
-        filename (str): The filename of the document.
-        filepath (str): The relative path of the document.
-        chunks (list): The chunks of text content and their token counts.
-    
-    Returns:
-        list: List of document dictionaries with chunk ID, document ID, content, filename, filepath, token count, and overlap metadata.
-    """
-    # Create document ID by combining filepath and filename
-    full_doc_id = os.path.join(filepath, filename) if filepath != '.' else filename
-    # Sanitize the document ID (only replaces spaces with underscores)
-    safe_doc_id = sanitize_id(full_doc_id)
-    
-    return [
-        {
-            "id": f"{safe_doc_id}#chunk{chunk_idx}",  # Unique chunk ID that includes the document path
-            "doc_id": safe_doc_id,  # Document ID is the full relative path with spaces replaced
-            "content": chunk,
-            "filename": filename,
-            "filepath": filepath,
-            "chunk_size": chunk_size,  # The token count of the chunk
-            "overlap_size": overlap_size  # The token count of the overlap
-        }
-        for chunk_idx, (chunk, chunk_size, overlap_size) in enumerate(chunks)
-    ]
