@@ -413,8 +413,18 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
     urls_tried = set()
     
     def try_scrape_page(url: str) -> Optional[str]:
+        # Skip if URL is None or invalid
+        if not url or not isinstance(url, str):
+            return None
+            
+        # Validate URL format
+        if not url.startswith(('http://', 'https://')):
+            logging.warning(f"Invalid URL format: {url}")
+            return None
+            
         if url in urls_tried:
             return None
+            
         urls_tried.add(url)
         try:
             content = scrape_webpage(url)
@@ -434,7 +444,13 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
             if pages_processed >= max_pages:
                 break
                 
-            content = try_scrape_page(result.get('link'))
+            # Get URL from result, checking multiple possible keys
+            url = result.get('link') or result.get('url') or result.get('href')
+            if not url:
+                logging.warning(f"No valid URL found in result: {result}")
+                continue
+                
+            content = try_scrape_page(url)
             if content:
                 content_found.append(content)
                 pages_processed += 1
