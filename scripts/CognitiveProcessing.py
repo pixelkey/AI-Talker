@@ -403,16 +403,28 @@ EXCERPT: [If relevant, include the most pertinent information here. Otherwise wr
     
     return is_relevant, excerpt
 
-def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict, max_pages: int = 3) -> str:
+def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict, max_pages: int = 3, timeout_seconds: int = 30) -> str:
     """
     Get detailed content from web pages based on search results.
     If initial results aren't sufficient, tries alternative search strategies.
+    Times out after specified seconds.
     """
     all_content = []
     pages_scraped = 0
     urls_tried = set()
+    start_time = time.time()
+    
+    def is_timed_out() -> bool:
+        elapsed = time.time() - start_time
+        if elapsed >= timeout_seconds:
+            logging.warning(f"Web search timed out after {elapsed:.1f} seconds")
+            return True
+        return False
     
     def try_scrape_page(url: str) -> Optional[str]:
+        if is_timed_out():
+            return None
+            
         # Skip if URL is None or invalid
         if not url or not isinstance(url, str):
             return None
@@ -437,11 +449,14 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
         return None
 
     def process_results(results: List[Dict], start_idx: int = 0) -> Tuple[List[str], int]:
+        if is_timed_out():
+            return [], 0
+            
         content_found = []
         pages_processed = 0
         
         for result in results[start_idx:]:
-            if pages_processed >= max_pages:
+            if is_timed_out() or pages_processed >= max_pages:
                 break
                 
             # Get URL from result, checking multiple possible keys
@@ -461,19 +476,19 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
     initial_content, pages_scraped = process_results(search_results)
     all_content.extend(initial_content)
 
-    # If we haven't found enough relevant content, try next batch of results
-    if pages_scraped < max_pages and len(search_results) > max_pages:
+    # If we haven't found enough relevant content and haven't timed out, try next batch
+    if not is_timed_out() and pages_scraped < max_pages and len(search_results) > max_pages:
         next_content, additional_pages = process_results(search_results, max_pages)
         all_content.extend(next_content)
         pages_scraped += additional_pages
 
-    # If still not enough content, try alternative search queries
-    if not all_content or pages_scraped < max_pages:
+    # If still not enough content and haven't timed out, try alternative queries
+    if not is_timed_out() and (not all_content or pages_scraped < max_pages):
         # Generate alternative search queries
         alt_queries = generate_alternative_queries(query, context)
         
         for alt_query in alt_queries:
-            if pages_scraped >= max_pages:
+            if is_timed_out() or pages_scraped >= max_pages:
                 break
                 
             try:
@@ -486,6 +501,8 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
             except Exception as e:
                 logging.warning(f"Error with alternative query '{alt_query}': {str(e)}")
 
+    elapsed = time.time() - start_time
+    logging.info(f"Web search completed in {elapsed:.1f} seconds, found {len(all_content)} relevant results")
     return "\n\n".join(all_content) if all_content else ""
 
 def generate_alternative_queries(original_query: str, context: Dict[str, Any]) -> List[str]:
