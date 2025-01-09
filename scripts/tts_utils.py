@@ -5,6 +5,7 @@ import os
 import logging
 import tempfile
 import torchaudio
+import gc
 
 class TTSManager:
     def __init__(self, context):
@@ -15,10 +16,30 @@ class TTSManager:
         self.conditioning_latents = None
         self.initialize_tts()
 
+    def clear_gpu_memory(self):
+        """Clear GPU memory cache and run garbage collection"""
+        if torch.cuda.is_available():
+            # Empty CUDA cache
+            torch.cuda.empty_cache()
+            torch.cuda.memory.empty_cache()
+            # Clear any existing models from memory
+            if hasattr(self, 'tts') and self.tts is not None:
+                del self.tts
+            if hasattr(self, 'conditioning_latents') and self.conditioning_latents is not None:
+                del self.conditioning_latents
+            self.tts = None
+            self.conditioning_latents = None
+            # Run garbage collection
+            gc.collect()
+            torch.cuda.empty_cache()
+
     def initialize_tts(self):
         """Initialize TTS and return the initialized objects"""
         print("\n=== Initializing TTS at startup ===")
         try:
+            # Clear GPU memory before initialization
+            self.clear_gpu_memory()
+
             # Initialize TTS with optimal configuration
             tts_config = {
                 "kv_cache": True,
