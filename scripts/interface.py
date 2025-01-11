@@ -104,7 +104,11 @@ def setup_gradio_interface(context):
             
             # Generate speech for the response
             print("\nGenerating TTS response...")
-            audio_path = tts_manager.text_to_speech(response)
+            # Use the emotion-enhanced response if available
+            tts_text = context.get('tts_response', response)
+            print(f"\nDEBUG - Original response: {response[:100]}...")
+            print(f"DEBUG - TTS text with emotion: {tts_text[:100]}...")
+            audio_path = tts_manager.text_to_speech(tts_text)
             print("TTS generation complete")
             
             # Update embeddings in background and start reflection
