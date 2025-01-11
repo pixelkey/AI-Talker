@@ -54,7 +54,50 @@ Summary:"""
         logger.error(f"Error generating LLM summary: {str(e)}")
         return content
 
-def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max_length: int = 1000, context: Optional[Dict[str, Any]] = None) -> str:
+def is_content_relevant(content: str, query: str, context: Dict) -> bool:
+    """
+    Quick binary check if content is relevant to the query.
+    Returns: True if relevant, False if not
+    """
+    if not content.strip():
+        return False
+        
+    start_time = time.time()
+    prompt = f"""Determine if this content is relevant for answering the query.
+Only respond with TRUE or FALSE.
+
+Query: "{query}"
+
+Content:
+{content[:1000]}
+
+Response (TRUE/FALSE):"""
+    
+    try:
+        if config.MODEL_SOURCE == "openai":
+            response = context["client"].chat.completions.create(
+                model=context["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0
+            )
+            result = response.choices[0].message.content.strip().upper()
+        else:
+            response = context["client"].chat(
+                model=context["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}]
+            )
+            result = response['message']['content'].strip().upper()
+        
+        is_relevant = result == "TRUE"
+        duration = time.time() - start_time
+        logger.debug(f"Relevance check took {duration:.2f}s - Result: {is_relevant}")
+        return is_relevant
+    except Exception as e:
+        logger.error(f"Error in relevance check: {str(e)}")
+        return False
+
+def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max_length: int = 1000, context: Optional[Dict[str, Any]] = None, query: Optional[str] = None) -> str:
     """
     Summarize RAG retrieval results only if they exceed the maximum length.
     Otherwise, return the original content as is.
@@ -70,9 +113,8 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
             reverse=True
         )
         
-        # First combine all content to check total length
-        all_content = []
-        total_length = 0
+        # Process and filter documents
+        filtered_contents = []
         
         for doc in sorted_docs:
             # Extract content based on document type
@@ -87,25 +129,33 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
             # Skip empty content
             if not content.strip():
                 continue
-
+                
             # Skip reference sections
             content_parts = content.split("REFERENCES:")
-            clean_content = content_parts[0].strip()  # Take only the part before REFERENCES
+            clean_content = content_parts[0].strip()
             
             # Skip if content is just metadata or references
             if not clean_content or clean_content.lower().startswith("references"):
                 continue
                 
-            all_content.append(clean_content)
-            total_length += len(clean_content)
+            # Check relevance if we have query and context
+            if query and context:
+                if is_content_relevant(clean_content, query, context):
+                    filtered_contents.append(clean_content)
+            else:
+                filtered_contents.append(clean_content)
         
         # If no valid content after filtering
-        if not all_content:
+        if not filtered_contents:
             return ""
+            
+        # Join all content
+        all_content = "\n\n".join(filtered_contents)
+        total_length = len(all_content)
             
         # If total length is within limit, return filtered content
         if total_length <= max_length:
-            return "\n\n".join(all_content)
+            return all_content
             
         logger.info(f"Content exceeded max length ({total_length} > {max_length})")
             
@@ -116,35 +166,12 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
             
         # If content exceeds max length and we have context, use LLM to generate summary
         if context:
-            combined_content = "\n\n".join(all_content)
             logger.info("Generating LLM summary...")
-            return generate_llm_summary(combined_content, context)
+            return generate_llm_summary(all_content, context)
             
         # Fallback to simple truncation if no context provided
         logger.warning("No context provided for LLM summary. Falling back to simple truncation.")
-        summarized_context = []
-        current_length = 0
-        
-        for content in all_content:
-            content_length = len(content)
-            
-            # If adding this content would exceed max length
-            if current_length + content_length > max_length:
-                # If this is the first document, take a portion of it
-                if not summarized_context:
-                    truncated_content = content[:max_length].rsplit(' ', 1)[0]
-                    summarized_context.append(truncated_content)
-                break
-                
-            # Add content to summary
-            summarized_context.append(content)
-            current_length += content_length
-            
-        # Join all summarized content
-        final_summary = "\n\n".join(summarized_context)
-        
-        logger.info(f"Content exceeded max length ({total_length} > {max_length}). Truncated to {len(final_summary)} characters")
-        return final_summary
+        return all_content[:max_length].rsplit(' ', 1)[0]
         
     except Exception as e:
         logger.error(f"Error summarizing RAG results: {str(e)}")

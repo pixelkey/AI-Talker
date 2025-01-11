@@ -32,8 +32,8 @@ def retrieve_and_format_references(input_text: str, context: Dict) -> Tuple[str,
     if not references:
         return "", None, None
 
-    # Build the context documents for LLM prompt
-    context_documents = build_context_documents(filtered_docs, context if True else None)
+    # Build the context documents for LLM prompt, passing the query for relevance checking
+    context_documents = summarize_rag_results(filtered_docs, context=context, query=normalized_input)
 
     return references, filtered_docs, context_documents
 
