@@ -80,21 +80,42 @@ class TTSManager:
             traceback.print_exc()
 
     def text_to_speech(self, text):
-        """Convert text to speech using Tortoise TTS"""
-        print("\n=== Starting text_to_speech ===")
+        """Convert text to speech using Tortoise TTS with emotional prompting support.
+        
+        The text can include emotional cues in brackets at the start, like:
+        "[happy and excited] Hello there!" or "[sad and slow] I miss you"
+        These cues will influence the speech generation but won't be spoken.
+        """
+        logger = logging.getLogger(__name__)
+        logger.info("\n=== Starting text_to_speech ===")
         
         if not text:
-            print("No text provided, returning None")
+            logger.warning("No text provided, returning None")
             return None
 
         if not all([self.tts, self.voice_samples, self.conditioning_latents]):
-            print("TTS not properly initialized")
+            logger.error("TTS not properly initialized")
             return None
         
         try:
+            # Extract emotion cue if present
+            emotion_cue = ""
+            text_to_speak = text
+            
+            # Look for emotion cue in brackets at the start
+            if text.startswith("["):
+                end_bracket = text.find("]")
+                if end_bracket != -1:
+                    emotion_cue = text[1:end_bracket].strip()
+                    text_to_speak = text[end_bracket + 1:].strip()
+                    logger.info(f"Detected emotion cue: '{emotion_cue}'")
+                    logger.info(f"Text to speak: '{text_to_speak[:100]}...'")
+            else:
+                logger.info("No emotion cue detected in text")
+            
             print("Processing text chunks...")
             # Split long text into smaller chunks at sentence boundaries
-            sentences = text.split('.')
+            sentences = text_to_speak.split('.')
             max_chunk_length = 100  # Maximum characters per chunk
             chunks = []
             current_chunk = ""
@@ -121,34 +142,46 @@ class TTSManager:
                 
                 print("Generating autoregressive samples...")
                 try:
+                    # Add emotion cue back to each chunk if it exists
+                    chunk_with_emotion = f"[{emotion_cue}] {chunk}" if emotion_cue else chunk
+                    logger.info(f"Processing chunk with emotion: '{chunk_with_emotion}'")
+                    
                     gen = self.tts.tts_with_preset(
-                        chunk,
+                        chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='ultra_fast',
+                        preset='standard',
                         use_deterministic_seed=True,
-                        num_autoregressive_samples=1,
-                        diffusion_iterations=15,
+                        num_autoregressive_samples=2,
+                        diffusion_iterations=30,
                         cond_free=True,
-                        cond_free_k=2.0,
-                        temperature=1.0
+                        cond_free_k=5.0,
+                        temperature=0.8,
+                        length_penalty=1.0,
+                        repetition_penalty=2.0,
+                        top_p=0.8
                     )
                     print(f"Generated audio for chunk {i}")
                 except RuntimeError as e:
                     print(f"Error generating audio for chunk {i}: {e}")
                     if "expected a non-empty list of Tensors" in str(e):
                         print("Retrying with different configuration...")
-                        # Try again with modified settings
+                        # Try again with modified settings and emotion
+                        chunk_with_emotion = f"[{emotion_cue}] {chunk}" if emotion_cue else chunk
                         gen = self.tts.tts_with_preset(
-                            chunk,
+                            chunk_with_emotion,
                             voice_samples=self.voice_samples,
                             conditioning_latents=self.conditioning_latents,
-                            preset='ultra_fast',
+                            preset='standard',
                             use_deterministic_seed=True,
                             num_autoregressive_samples=2,
-                            diffusion_iterations=10,
-                            cond_free=False,
-                            temperature=0.8
+                            diffusion_iterations=20,
+                            cond_free=True,
+                            cond_free_k=4.0,
+                            temperature=0.7,
+                            length_penalty=1.0,
+                            repetition_penalty=2.0,
+                            top_p=0.8
                         )
                         print("Retry successful")
                     else:
