@@ -485,15 +485,20 @@ def evaluate_search_results(results: List[Dict], original_query: str, context: D
         for r in results
     ])
     
-    prompt = f"""Evaluate these search results for DIRECT relevance to the original query.
-Be VERY strict - only consider a result relevant if it contains specific information that helps answer the query.
+    prompt = f"""Evaluate these search results for relevance to the original query.
+Consider a result relevant if it contains information that helps answer the query, even if indirectly.
 
-Mark as NOT relevant:
-- General or tangentially related information
-- Results about different topics even if they share keywords
-- Results that don't directly address the query
-- Outdated or historical information when current info is needed
-- Results that only mention the topic without providing useful details
+Mark as NOT relevant only if:
+- The content is completely unrelated to the query topic
+- The information is severely outdated when current info is needed
+- The content is empty or contains no useful information
+- The content is purely promotional or spam
+
+For news queries, consider content relevant if it:
+- Contains recent information about the query subject
+- Provides context or background that helps understand current events
+- Includes related developments or updates
+- Comes from reputable news sources
 
 Original Query: "{original_query}"
 
@@ -508,7 +513,7 @@ FILTERED_INDICES: [List the indices (0-based) of relevant results]
 
 Example response:
 RELEVANT: true
-REASON: Results 0 and 2 contain current, specific information that directly answers the query
+REASON: Results 0 and 2 contain recent news and updates about the query topic
 FOLLOW_UP: none
 FILTERED_INDICES: [0, 2]"""
 
@@ -516,7 +521,7 @@ FILTERED_INDICES: [0, 2]"""
         response = context["client"].chat.completions.create(
             model=context["LLM_MODEL"],
             messages=[
-                {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow search results that DIRECTLY answer the user's query. Be conservative - when in doubt, exclude the result."},
+                {"role": "system", "content": "You are a relevance filter. Your job is to only allow search results that help answer the user's query."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=150,
@@ -527,52 +532,59 @@ FILTERED_INDICES: [0, 2]"""
         response = context["client"].chat(
             model=context["LLM_MODEL"],
             messages=[
-                {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow search results that DIRECTLY answer the user's query. Be conservative - when in doubt, exclude the result."},
+                {"role": "system", "content": "You are a relevance filter. Your job is to only allow search results that help answer the user's query."},
                 {"role": "user", "content": prompt}
             ],
         )
         eval_text = response['message']['content'].strip()
     
+    # Add debug logging for LLM response
+    logging.info(f"LLM relevance evaluation response:\n{eval_text}")
+    
     try:
         # Parse evaluation
         eval_lines = eval_text.split('\n')
-        is_relevant = any(line.lower().endswith('true') for line in eval_lines if line.startswith('RELEVANT:'))
         
-        # Get follow-up query
+        # Extract all relevant indices from the response
+        all_indices = []
+        for line in eval_lines:
+            if line.startswith('FILTERED_INDICES:'):
+                indices_str = line.split(':', 1)[1].strip()
+                try:
+                    indices = [int(i.strip()) for i in indices_str.strip('[]').split(',') if i.strip()]
+                    all_indices.extend(indices)
+                except:
+                    logging.warning(f"Failed to parse indices from line: {line}")
+                    continue
+        
+        # Remove duplicates and sort
+        relevant_indices = sorted(list(set(all_indices)))
+        
+        # Check if we found any relevant results
+        is_relevant = len(relevant_indices) > 0
+        
+        # Get follow-up query from any FOLLOW_UP line
         follow_up_lines = [line for line in eval_lines if line.startswith('FOLLOW_UP:')]
         follow_up = follow_up_lines[0].split(':', 1)[1].strip() if follow_up_lines else "none"
         
-        # Get indices, with fallback to using all results if parsing fails
-        indices_lines = [line for line in eval_lines if line.startswith('FILTERED_INDICES:')]
-        if indices_lines:
-            indices_str = indices_lines[0].split(':', 1)[1].strip()
-            try:
-                relevant_indices = [int(i.strip()) for i in indices_str.strip('[]').split(',') if i.strip()]
-            except:
-                logging.warning("Failed to parse relevant indices, using empty list")
-                relevant_indices = []
-        else:
-            logging.warning("No relevant indices found, using empty list")
-            relevant_indices = []
-            
         # Filter results by relevant indices
         filtered_results = [results[i] for i in relevant_indices if i < len(results)]
         
-        # If no results were marked relevant, keep them empty
-        if not filtered_results:
-            is_relevant = False
-            
         logging.info(f"Web search relevance check - Query: '{original_query[:50]}...' - Found {len(filtered_results)} relevant results")
-            
+        if filtered_results:
+            logging.info(f"Relevant result URLs: {[r.get('link', '') or r.get('url', '') for r in filtered_results]}")
+        
+        needs_followup = not is_relevant and follow_up.lower() != 'none'
+        return needs_followup, follow_up, filtered_results
+        
     except Exception as e:
         logging.error(f"Error parsing evaluation response: {str(e)}")
         # On error, return no results
         filtered_results = []
         is_relevant = False
         follow_up = "none"
-    
-    needs_followup = not is_relevant and follow_up.lower() != 'none'
-    return needs_followup, follow_up, filtered_results
+        needs_followup = not is_relevant and follow_up.lower() != 'none'
+        return needs_followup, follow_up, filtered_results
 
 def evaluate_content_relevance(content: str, query: str, context: Dict) -> Tuple[bool, str]:
     """
@@ -609,6 +621,9 @@ EXCERPT: [If relevant, include the most pertinent information here. Otherwise wr
             messages=[{"role": "user", "content": prompt}],
         )
         eval_text = response['message']['content'].strip()
+    
+    # Add debug logging for LLM response
+    logging.info(f"LLM relevance evaluation response:\n{eval_text}")
     
     # Parse evaluation
     eval_lines = eval_text.split('\n')
