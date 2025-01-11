@@ -672,10 +672,12 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
     """
     Get detailed content from web pages based on search results.
     Uses ThreadPoolExecutor for parallel processing with improved concurrency.
+    Returns content with clickable source links.
     """
     all_content = []
     processed_urls = set()
     start_time = time.time()
+    url_index = 1  # Counter for source references
     
     def is_timed_out() -> bool:
         elapsed = time.time() - start_time
@@ -701,10 +703,13 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
             is_relevant, excerpt = evaluate_content_relevance(content, query, context)
             if is_relevant:
                 logging.info(f"Using existing fresh content from {url}")
-                all_content.append(excerpt)
+                # Format content with source reference
+                formatted_content = f"[{url_index}] {excerpt}\n[Source {url_index}]: {url}"
+                all_content.append(formatted_content)
+                url_index += 1
                 continue
 
-    def process_single_url(url: str) -> Optional[str]:
+    def process_single_url(url: str, index: int) -> Optional[str]:
         """Process a single URL with existing scrape_webpage function"""
         if is_timed_out() or not url or url in processed_urls:
             return None
@@ -719,7 +724,8 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
             if content:
                 is_relevant, excerpt = evaluate_content_relevance(content, query, context)
                 if is_relevant:
-                    return excerpt
+                    # Format content with source reference
+                    return f"[{index}] {excerpt}\n[Source {index}]: {url}"
         except Exception as e:
             logging.warning(f"Error processing {url}: {str(e)}")
         return None
@@ -732,11 +738,12 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
                 break
             url = result.get('url') or result.get('link')
             if url and url not in processed_urls and url.startswith(('http://', 'https://')):
-                remaining_urls.append(url)
+                remaining_urls.append((url, url_index))
+                url_index += 1
 
         if remaining_urls:
             with ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_url = {executor.submit(process_single_url, url): url for url in remaining_urls}
+                future_to_url = {executor.submit(process_single_url, url, idx): url for url, idx in remaining_urls}
                 
                 for future in concurrent.futures.as_completed(future_to_url):
                     if is_timed_out() or len(all_content) >= max_pages:
@@ -754,6 +761,8 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
 
     elapsed = time.time() - start_time
     logging.info(f"Web content processing completed in {elapsed:.1f} seconds, found {len(all_content)} relevant results")
+    
+    # Join all content with double newlines for readability
     return "\n\n".join(all_content) if all_content else ""
 
 def generate_alternative_queries(original_query: str, context: Dict[str, Any]) -> List[str]:
