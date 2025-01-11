@@ -12,6 +12,7 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 import random
 import re
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -256,33 +257,62 @@ def perform_web_search(search_query: str, ddgs: DDGS, max_depth: int = 1, curren
             
             if search_results:
                 logging.info(f"Found {len(search_results)} valid search results")
-                # Process each result and get fresh content
-                for result in search_results:
-                    url = result['link']
-                    logging.info(f"Attempting to scrape: {url}")
+                
+                start_time = time.time()
+                
+                # Process URLs in parallel using ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    # Create a list of (url, title) tuples to process
+                    url_tasks = [(result['link'], result['title']) for result in search_results]
                     
-                    try:
-                        fresh_content = scrape_webpage(url)
-                        if fresh_content and len(fresh_content.strip()) > 100:  # Ensure we have substantial content
-                            # Create new result with fresh content
-                            enriched_result = {
-                                'url': url,
-                                'title': result['title'],
-                                'fresh_content': fresh_content,
-                                'source': 'direct_scrape'
-                            }
-                            results.append(enriched_result)
-                            logging.info(f"Successfully scraped content from {url}")
+                    logging.info(f"Starting parallel scraping of {len(url_tasks)} URLs with {min(5, len(url_tasks))} threads")
+                    
+                    # Submit all scraping tasks
+                    future_to_url = {
+                        executor.submit(lambda x: (
+                            x[0], 
+                            x[1], 
+                            (logging.info(f"Thread {threading.current_thread().name}: Starting scrape of {x[0]}"),
+                             time.time(),
+                             scrape_webpage(x[0]),
+                             time.time())[2:]  # Return only the content and end time
+                        ), url_task): url_task[0] 
+                        for url_task in url_tasks
+                    }
+                    
+                    # Process completed tasks as they finish
+                    for future in concurrent.futures.as_completed(future_to_url):
+                        url = future_to_url[future]
+                        try:
+                            url, title, (content, end_time) = future.result()
+                            scrape_time = end_time - start_time
+                            logging.info(f"Thread {threading.current_thread().name}: Completed scrape of {url} in {scrape_time:.2f}s")
                             
-                            # Limit to first 3 successful scrapes for quality results
-                            if len(results) >= 3:
-                                logging.info("Reached target number of scraped results")
-                                return results
-                        else:
-                            logging.warning(f"Insufficient content scraped from {url}")
-                    except Exception as scrape_error:
-                        logging.warning(f"Failed to scrape {url}: {str(scrape_error)}")
-                        continue
+                            if content and len(content.strip()) > 100:  # Ensure we have substantial content
+                                # Create new result with fresh content
+                                enriched_result = {
+                                    'url': url,
+                                    'title': title,
+                                    'fresh_content': content,
+                                    'source': 'direct_scrape',
+                                    'scrape_time': scrape_time
+                                }
+                                results.append(enriched_result)
+                                logging.info(f"Successfully scraped content from {url} (size: {len(content)} chars)")
+                                
+                                # Limit to first 3 successful scrapes for quality results
+                                if len(results) >= 3:
+                                    total_time = time.time() - start_time
+                                    logging.info(f"Reached target number of scraped results in {total_time:.2f}s")
+                                    return results
+                            else:
+                                logging.warning(f"Insufficient content scraped from {url}")
+                        except Exception as scrape_error:
+                            logging.warning(f"Failed to scrape {url}: {str(scrape_error)}")
+                            continue
+                
+                total_time = time.time() - start_time
+                logging.info(f"Completed all scraping in {total_time:.2f}s")
                 
                 # If we got any results at all, return them
                 if results:
