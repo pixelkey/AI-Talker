@@ -79,6 +79,62 @@ class TTSManager:
             import traceback
             traceback.print_exc()
 
+    def determine_temperature(self, emotion_cue, is_retry=False):
+        # Define temperature variations based on emotion with more dramatic ranges
+        temperature_map = {
+            # High energy emotions - more variation
+            'excited': 1.8,
+            'happy': 1.5,
+            'enthusiastic': 1.6,
+            'angry': 1.7,
+            'energetic': 1.6,
+            
+            # Medium energy emotions - balanced variation
+            'neutral': 1.0,
+            'confident': 1.2,
+            'professional': 0.9,
+            'formal': 0.8,
+            
+            # Low energy emotions - more controlled
+            'sad': 0.6,
+            'gentle': 0.5,
+            'calm': 0.7,
+            'soft': 0.5,
+            'tender': 0.6,
+            'melancholic': 0.7
+        }
+        
+        # Get the base temperature
+        base_temperature = temperature_map.get('neutral', 1.0)
+        
+        # Adjust temperature based on emotion cue
+        if emotion_cue:
+            emotion_parts = emotion_cue.lower().split(' and ')
+            temperatures = []
+            
+            # Collect temperatures for all mentioned emotions
+            for part in emotion_parts:
+                part = part.strip()
+                if part in temperature_map:
+                    temperatures.append(temperature_map[part])
+            
+            # If we found any matching emotions, use their average
+            if temperatures:
+                temperature = sum(temperatures) / len(temperatures)
+            else:
+                temperature = base_temperature
+                
+            # Adjust for retry if needed
+            if is_retry:
+                temperature = max(0.5, temperature * 0.8)  # Reduce by 20% but not below 0.5
+                
+            # Ensure we stay within safe bounds
+            temperature = min(2.0, max(0.5, temperature))
+        else:
+            temperature = base_temperature
+        
+        return temperature
+
     def text_to_speech(self, text):
         """Convert text to speech using Tortoise TTS with emotional prompting support.
         
@@ -146,17 +202,21 @@ class TTSManager:
                     chunk_with_emotion = f"[{emotion_cue}] {chunk}" if emotion_cue else chunk
                     logger.info(f"Processing chunk with emotion: '{chunk_with_emotion}'")
                     
+                    # Get temperature based on emotion
+                    temperature = self.determine_temperature(emotion_cue)
+                    logger.info(f"Using temperature {temperature} for emotional expression")
+                    
                     gen = self.tts.tts_with_preset(
                         chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='standard',
+                        preset='fast',  # Changed from standard to ultra_fast for memory efficiency
                         use_deterministic_seed=True,
-                        num_autoregressive_samples=2,
+                        num_autoregressive_samples=2,  # Keep at 1 for memory efficiency
                         diffusion_iterations=30,
                         cond_free=True,
                         cond_free_k=5.0,
-                        temperature=0.8,
+                        temperature=temperature,  # Use emotion-based temperature
                         length_penalty=1.0,
                         repetition_penalty=2.0,
                         top_p=0.8
@@ -168,17 +228,22 @@ class TTSManager:
                         print("Retrying with different configuration...")
                         # Try again with modified settings and emotion
                         chunk_with_emotion = f"[{emotion_cue}] {chunk}" if emotion_cue else chunk
+                        
+                        # Use a slightly lower temperature for retry
+                        retry_temperature = self.determine_temperature(emotion_cue, is_retry=True)
+                        logger.info(f"Retry attempt using temperature: {retry_temperature}")
+                        
                         gen = self.tts.tts_with_preset(
                             chunk_with_emotion,
                             voice_samples=self.voice_samples,
                             conditioning_latents=self.conditioning_latents,
-                            preset='standard',
+                            preset='ultra_fast',  # Changed from standard to ultra_fast for retry as well
                             use_deterministic_seed=True,
-                            num_autoregressive_samples=2,
+                            num_autoregressive_samples=1,
                             diffusion_iterations=20,
                             cond_free=True,
                             cond_free_k=4.0,
-                            temperature=0.7,
+                            temperature=retry_temperature,
                             length_penalty=1.0,
                             repetition_penalty=2.0,
                             top_p=0.8
