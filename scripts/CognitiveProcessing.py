@@ -800,8 +800,8 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
     2. If the information needs to be current/real-time
     3. If the query explicitly requests external information
     """
-    # Early return if query is None or empty
-    if not query or query.strip() == "":
+    # Early return if query is None, empty, or N/A
+    if not query or query.strip() == "" or query.strip().upper() in ["N/A", "NA", "NONE"]:
         return {
             "needs_web_search": False,
             "web_results": ""
@@ -959,11 +959,23 @@ SEARCH_TERMS: [If YES or if RAG only has partial info, provide 2-5 key search te
                         search_query = query
                         logging.info(f"No LLM suggestions, using original query: {search_query}")
                         
+                    # Skip search if terms are N/A or empty
+                    if not search_query or search_query.upper() in ["N/A", "NA", "NONE"]:
+                        return {
+                            "needs_web_search": False,
+                            "web_results": ""
+                        }
+                    
                     # Clean up search query
                     search_query = search_query.replace('"', '').replace("'", "").replace(",", "").strip()
                     if not search_query:  # Fallback if query is empty after cleaning
                         search_query = query
                         logging.info(f"Using fallback query: {search_query}")
+                        
+                    if llm_response.get("NEEDS_SEARCH", "NO").upper() == "YES":
+                        result["needs_web_search"] = True
+                else:
+                    search_query = ""
         # Perform web search if needed
         if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
