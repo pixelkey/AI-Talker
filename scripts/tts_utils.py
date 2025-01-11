@@ -135,11 +135,90 @@ class TTSManager:
         
         return temperature
 
+    def process_style_cue(self, style_cue: str) -> tuple[str, float]:
+        """
+        Process style and emotion cues to generate an enhanced prompt and temperature.
+        
+        Format examples:
+        [happy and excited, fast]
+        [sad, slow and gentle]
+        [professional, clear and confident]
+        [whispered, mysterious]
+        [shouting, angry and energetic]
+        
+        Returns:
+            tuple[str, float]: Enhanced prompt and calculated temperature
+        """
+        logger = logging.getLogger(__name__)
+        
+        # Style modifiers affect both prompt and temperature
+        style_modifiers = {
+            # Speed modifiers
+            'fast': {'prefix': 'speaking quickly and energetically', 'temp_mod': 1.2},
+            'slow': {'prefix': 'speaking slowly and deliberately', 'temp_mod': 0.8},
+            
+            # Volume/Intensity modifiers
+            'loud': {'prefix': 'speaking loudly and clearly', 'temp_mod': 1.3},
+            'soft': {'prefix': 'speaking softly and gently', 'temp_mod': 0.7},
+            'whispered': {'prefix': 'whispering intimately', 'temp_mod': 0.6},
+            'shouting': {'prefix': 'shouting energetically', 'temp_mod': 1.4},
+            
+            # Style modifiers
+            'clear': {'prefix': 'speaking very clearly and precisely', 'temp_mod': 0.9},
+            'mysterious': {'prefix': 'speaking mysteriously', 'temp_mod': 1.1},
+            'dramatic': {'prefix': 'speaking dramatically', 'temp_mod': 1.4},
+            'playful': {'prefix': 'speaking playfully', 'temp_mod': 1.3},
+            'formal': {'prefix': 'speaking formally', 'temp_mod': 0.8},
+            'casual': {'prefix': 'speaking casually', 'temp_mod': 1.1}
+        }
+        
+        if not style_cue:
+            return "", self.determine_temperature("")
+            
+        # Split into parts and clean
+        parts = [p.strip().lower() for p in style_cue.split(',')]
+        
+        # Process each part for emotions and styles
+        emotion_temp = self.determine_temperature(parts[0])  # First part is always emotion
+        
+        # Start building the enhanced prompt
+        prompt_parts = []
+        temp_modifiers = []
+        
+        # Add base emotion
+        prompt_parts.append(parts[0])
+        
+        # Process additional style modifiers
+        for part in parts[1:] if len(parts) > 1 else []:
+            words = part.split()
+            for word in words:
+                if word in style_modifiers:
+                    prompt_parts.append(style_modifiers[word]['prefix'])
+                    temp_modifiers.append(style_modifiers[word]['temp_mod'])
+        
+        # Combine everything into a final prompt
+        final_prompt = f"{', '.join(prompt_parts)}"
+        
+        # Calculate final temperature with modifiers
+        final_temp = emotion_temp
+        for modifier in temp_modifiers:
+            final_temp *= modifier
+            
+        # Ensure temperature stays within bounds
+        final_temp = min(2.0, max(0.5, final_temp))
+        
+        logger.info(f"Processed style cue '{style_cue}' into prompt '{final_prompt}' with temperature {final_temp}")
+        return final_prompt, final_temp
+
     def text_to_speech(self, text):
         """Convert text to speech using Tortoise TTS with emotional prompting support.
         
-        The text can include emotional cues in brackets at the start, like:
-        "[happy and excited] Hello there!" or "[sad and slow] I miss you"
+        The text can include emotional and style cues in brackets at the start, like:
+        "[happy and excited, fast] Hello there!"
+        "[sad, slow and gentle] I miss you"
+        "[professional, clear and confident] Let me explain"
+        "[whispered, mysterious] I have a secret"
+        
         These cues will influence the speech generation but won't be spoken.
         """
         logger = logging.getLogger(__name__)
@@ -154,20 +233,23 @@ class TTSManager:
             return None
         
         try:
-            # Extract emotion cue if present
-            emotion_cue = ""
+            # Extract style cue if present
+            style_cue = ""
             text_to_speak = text
             
-            # Look for emotion cue in brackets at the start
+            # Look for style cue in brackets at the start
             if text.startswith("["):
                 end_bracket = text.find("]")
                 if end_bracket != -1:
-                    emotion_cue = text[1:end_bracket].strip()
+                    style_cue = text[1:end_bracket].strip()
                     text_to_speak = text[end_bracket + 1:].strip()
-                    logger.info(f"Detected emotion cue: '{emotion_cue}'")
+                    logger.info(f"Detected style cue: '{style_cue}'")
                     logger.info(f"Text to speak: '{text_to_speak[:100]}...'")
             else:
-                logger.info("No emotion cue detected in text")
+                logger.info("No style cue detected in text")
+            
+            # Process the style cue into an enhanced prompt and temperature
+            emotion_prompt, temperature = self.process_style_cue(style_cue)
             
             print("Processing text chunks...")
             # Split long text into smaller chunks at sentence boundaries
@@ -198,12 +280,11 @@ class TTSManager:
                 
                 print("Generating autoregressive samples...")
                 try:
-                    # Add emotion cue back to each chunk if it exists
-                    chunk_with_emotion = f"[{emotion_cue}] {chunk}" if emotion_cue else chunk
-                    logger.info(f"Processing chunk with emotion: '{chunk_with_emotion}'")
+                    # Add enhanced emotion prompt back to each chunk if it exists
+                    chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
+                    logger.info(f"Processing chunk with emotion prompt: '{chunk_with_emotion}'")
                     
                     # Get temperature based on emotion
-                    temperature = self.determine_temperature(emotion_cue)
                     logger.info(f"Using temperature {temperature} for emotional expression")
                     
                     gen = self.tts.tts_with_preset(
@@ -227,10 +308,10 @@ class TTSManager:
                     if "expected a non-empty list of Tensors" in str(e):
                         print("Retrying with different configuration...")
                         # Try again with modified settings and emotion
-                        chunk_with_emotion = f"[{emotion_cue}] {chunk}" if emotion_cue else chunk
+                        chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
                         
                         # Use a slightly lower temperature for retry
-                        retry_temperature = self.determine_temperature(emotion_cue, is_retry=True)
+                        retry_temperature = self.determine_temperature("", is_retry=True)
                         logger.info(f"Retry attempt using temperature: {retry_temperature}")
                         
                         gen = self.tts.tts_with_preset(
