@@ -800,6 +800,13 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
     2. If the information needs to be current/real-time
     3. If the query explicitly requests external information
     """
+    # Early return if query is None or empty
+    if not query or query.strip() == "":
+        return {
+            "needs_web_search": False,
+            "web_results": ""
+        }
+        
     result = {
         "needs_web_search": False,
         "web_results": ""
