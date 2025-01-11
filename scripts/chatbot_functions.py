@@ -74,14 +74,9 @@ def chatbot_response(input_text, context_documents, context, history):
     final_references = []
     final_context = []
     
-    # Add formatted history to context
+    # Add formatted history to context first to prioritize conversation context
     if formatted_history:
         final_context.append(formatted_history)
-    
-    # Add RAG results if they exist
-    if references:
-        final_references.append(references)
-        final_context.append(references)
     
     # Add web search results if they exist
     if web_search_results["needs_web_search"] and web_search_results["web_results"]:
@@ -89,9 +84,19 @@ def chatbot_response(input_text, context_documents, context, history):
         final_references.append(web_ref)
         final_context.append(web_ref)
         
-        # Add web search results to history as a message pair with timestamp
-        timestamp_msg = f"[{formatted_time}] Web Search Results"
-        history.append([timestamp_msg, web_ref])
+        # Format web search results for both display and saving
+        # Store as assistant message for proper context
+        timestamp_msg = f"[{formatted_time}]\nUser: {input_text}"
+        history.append([timestamp_msg, f"[{formatted_time}]\nBot: {web_ref}"])
+        
+        # Save the updated history to persist web search results
+        if context.get("chat_manager"):
+            context["chat_manager"].save_history(history)
+    
+    # Add RAG results if they exist (after web search to prioritize recent context)
+    if references:
+        final_references.append(references)
+        final_context.append(references)
     
     # If no results at all, add placeholder
     if not final_references:
