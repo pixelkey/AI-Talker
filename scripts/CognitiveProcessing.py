@@ -926,15 +926,37 @@ SEARCH_TERMS: [If YES or if RAG only has partial info, provide 2-5 key search te
                 
                 if result["needs_web_search"]:
                     # Get search terms, prioritizing LLM's suggestion but falling back to query
-                    search_terms_line = next((line for line in lines if line.startswith("SEARCH_TERMS:")), "")
-                    if search_terms_line and len(search_terms_line.split(":")) > 1:
-                        search_query = search_terms_line.split(":", 1)[1].strip()
+                    search_terms = []
+                    in_search_terms = False
+                    for line in lines:
+                        if line.startswith("SEARCH_TERMS:"):
+                            in_search_terms = True
+                            # Get the rest of the line after the colon
+                            terms = line.split(":", 1)[1].strip()
+                            if terms and not terms.startswith("*"):  # If terms are on same line
+                                search_terms.append(terms)
+                        elif in_search_terms and line.startswith("*"):
+                            # Get terms from bullet points
+                            terms = line.strip("* ").strip('"').strip()
+                            if terms:
+                                search_terms.append(terms)
+                        elif in_search_terms and not line.startswith("*"):
+                            # End of search terms section
+                            break
+                    
+                    # Use the first search term if available, otherwise use original query
+                    if search_terms:
+                        search_query = search_terms[0]  # Use first suggested search term
+                        logging.info(f"Using LLM suggested search query: {search_query}")
                     else:
                         search_query = query
+                        logging.info(f"No LLM suggestions, using original query: {search_query}")
                         
-                    # Clean up search query - remove quotes and extra punctuation
-                    search_query = search_query.replace('"', '').replace("'", "").replace(",", "")
-                    search_query = ' '.join(search_query.split()[:5])  # Limit to 5 words
+                    # Clean up search query
+                    search_query = search_query.replace('"', '').replace("'", "").replace(",", "").strip()
+                    if not search_query:  # Fallback if query is empty after cleaning
+                        search_query = query
+                        logging.info(f"Using fallback query: {search_query}")
         # Perform web search if needed
         if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
