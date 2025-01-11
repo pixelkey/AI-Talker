@@ -88,6 +88,10 @@ def chatbot_response(input_text, context_documents, context, history):
         web_ref = "Web Search Results:\n" + web_search_results["web_results"]
         final_references.append(web_ref)
         final_context.append(web_ref)
+        
+        # Add web search results to history as a message pair with timestamp
+        timestamp_msg = f"[{formatted_time}] Web Search Results"
+        history.append([timestamp_msg, web_ref])
     
     # If no results at all, add placeholder
     if not final_references:
