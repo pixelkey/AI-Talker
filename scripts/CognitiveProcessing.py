@@ -63,8 +63,12 @@ def is_content_relevant(content: str, query: str, context: Dict) -> bool:
         return False
         
     start_time = time.time()
-    prompt = f"""Determine if this content is relevant for answering the query.
-Only respond with TRUE or FALSE.
+    prompt = f"""Determine if this content is DIRECTLY relevant for answering the query.
+Be VERY strict - only return TRUE if the content contains specific information that helps answer the query.
+Return FALSE for:
+- General or tangentially related information
+- Content about different topics even if they share some keywords
+- Historical conversations that don't directly answer the current query
 
 Query: "{query}"
 
@@ -77,7 +81,10 @@ Response (TRUE/FALSE):"""
         if config.MODEL_SOURCE == "openai":
             response = context["client"].chat.completions.create(
                 model=context["LLM_MODEL"],
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow content that DIRECTLY answers the user's query. Be conservative - when in doubt, return FALSE."},
+                    {"role": "user", "content": prompt}
+                ],
                 max_tokens=10,
                 temperature=0
             )
@@ -85,13 +92,16 @@ Response (TRUE/FALSE):"""
         else:
             response = context["client"].chat(
                 model=context["LLM_MODEL"],
-                messages=[{"role": "user", "content": prompt}]
+                messages=[
+                    {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow content that DIRECTLY answers the user's query. Be conservative - when in doubt, return FALSE."},
+                    {"role": "user", "content": prompt}
+                ]
             )
             result = response['message']['content'].strip().upper()
         
         is_relevant = result == "TRUE"
         duration = time.time() - start_time
-        logger.debug(f"Relevance check took {duration:.2f}s - Result: {is_relevant}")
+        logger.debug(f"Relevance check took {duration:.2f}s - Query: '{query[:50]}...' - Result: {is_relevant}")
         return is_relevant
     except Exception as e:
         logger.error(f"Error in relevance check: {str(e)}")
@@ -475,9 +485,15 @@ def evaluate_search_results(results: List[Dict], original_query: str, context: D
         for r in results
     ])
     
-    prompt = f"""Evaluate these search results for relevance to the original query.
-Consider a result relevant if it has ANY information that could help answer the query.
-Be inclusive rather than exclusive in what you consider relevant.
+    prompt = f"""Evaluate these search results for DIRECT relevance to the original query.
+Be VERY strict - only consider a result relevant if it contains specific information that helps answer the query.
+
+Mark as NOT relevant:
+- General or tangentially related information
+- Results about different topics even if they share keywords
+- Results that don't directly address the query
+- Outdated or historical information when current info is needed
+- Results that only mention the topic without providing useful details
 
 Original Query: "{original_query}"
 
@@ -492,21 +508,28 @@ FILTERED_INDICES: [List the indices (0-based) of relevant results]
 
 Example response:
 RELEVANT: true
-REASON: Results 0 and 2 contain recent information about the topic
+REASON: Results 0 and 2 contain current, specific information that directly answers the query
 FOLLOW_UP: none
 FILTERED_INDICES: [0, 2]"""
 
     if config.MODEL_SOURCE == "openai":
         response = context["client"].chat.completions.create(
             model=context["LLM_MODEL"],
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow search results that DIRECTLY answer the user's query. Be conservative - when in doubt, exclude the result."},
+                {"role": "user", "content": prompt}
+            ],
             max_tokens=150,
+            temperature=0
         )
         eval_text = response.choices[0].message.content.strip()
     else:
         response = context["client"].chat(
             model=context["LLM_MODEL"],
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow search results that DIRECTLY answer the user's query. Be conservative - when in doubt, exclude the result."},
+                {"role": "user", "content": prompt}
+            ],
         )
         eval_text = response['message']['content'].strip()
     
@@ -526,24 +549,26 @@ FILTERED_INDICES: [0, 2]"""
             try:
                 relevant_indices = [int(i.strip()) for i in indices_str.strip('[]').split(',') if i.strip()]
             except:
-                # If parsing fails, consider all results relevant
-                relevant_indices = list(range(len(results)))
+                logging.warning("Failed to parse relevant indices, using empty list")
+                relevant_indices = []
         else:
-            relevant_indices = list(range(len(results)))
+            logging.warning("No relevant indices found, using empty list")
+            relevant_indices = []
             
         # Filter results by relevant indices
         filtered_results = [results[i] for i in relevant_indices if i < len(results)]
         
-        # If no results were marked relevant but we have results, use them all
-        if not filtered_results and results:
-            filtered_results = results
-            is_relevant = True
+        # If no results were marked relevant, keep them empty
+        if not filtered_results:
+            is_relevant = False
+            
+        logging.info(f"Web search relevance check - Query: '{original_query[:50]}...' - Found {len(filtered_results)} relevant results")
             
     except Exception as e:
         logging.error(f"Error parsing evaluation response: {str(e)}")
-        # On error, consider all results relevant
-        filtered_results = results
-        is_relevant = True
+        # On error, return no results
+        filtered_results = []
+        is_relevant = False
         follow_up = "none"
     
     needs_followup = not is_relevant and follow_up.lower() != 'none'
