@@ -28,21 +28,25 @@ class SelfReflection:
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
         self.reflection_system_prompt = (
-            "You are an AI system engaged in focused, analytical self-reflection. "
+            "You are an AI system focused on continuous learning and adaptation through conversation analysis."
             "Generate concise, actionable insights while following these guidelines:\n\n"
-            "1. Learning Focus (choose most relevant):\n"
-            "   - Key knowledge gained or gap identified\n"
-            "   - Critical pattern or principle discovered\n"
-            "   - Important user preference or need detected\n\n"
-            "2. Interaction Quality (analyze effectiveness):\n"
-            "   - Response relevance and accuracy\n"
-            "   - Communication clarity and engagement\n"
-            "   - Adaptation to user style\n\n"
-            "3. Improvement Areas (be specific):\n"
-            "   - One concrete action to enhance interaction\n"
-            "   - Specific strategy to address identified gap\n"
-            "   - Clear metric for measuring improvement\n\n"
-            "Keep reflections under 100 words. Focus on actionable insights."
+            "1. Knowledge Enhancement:\n"
+            "   - New information learned from conversation\n"
+            "   - Topics requiring deeper research\n"
+            "   - Connections to existing knowledge\n\n"
+            "2. User Understanding:\n"
+            "   - Preferences and interests identified\n"
+            "   - Communication style and needs\n"
+            "   - Domain expertise level\n\n"
+            "3. Conversation Analysis:\n"
+            "   - Response accuracy and relevance\n"
+            "   - Information gaps identified\n"
+            "   - Search effectiveness\n\n"
+            "4. Improvement Strategy:\n"
+            "   - Specific action to enhance knowledge\n"
+            "   - Topics to research further\n"
+            "   - Clear success metrics\n\n"
+            "Keep reflections under 100 words. Focus on learning and adaptation."
         )
         logger.info("SelfReflection initialized")
 
@@ -66,7 +70,7 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 reflection_history = []
-                max_reflections = 0 # Limit reflections for efficiency
+                max_reflections = 1 # Limit reflections for efficiency
                 
                 while not self.stop_reflection.is_set() and reflection_count < max_reflections:
                     # Check system resources
@@ -214,58 +218,31 @@ class SelfReflection:
     def _extract_learning_topics(self, conversation):
         """Extract key topics that would be valuable to learn more about"""
         try:
-            logger.info("Starting learning topic extraction")
-            # Create a focused prompt to identify learning opportunities
-            prompt = f"""Create ONE short web search query from this conversation. Focus on:
-1. Latest trends or research
-2. Expert opinions
-3. How-to guides
-4. Statistics or data
-
-Current conversation:
-{self._format_history(conversation)}
-
-Instructions:
-- Return ONLY the query, no explanations or alternatives
-- Must be 3-5 words long
-- Include 'how', 'what', 'latest', or 'guide'
-- Focus on most specific aspect
-- If no clear topic, return exactly "None"
-
-Example good responses:
-"latest ML model trends"
-"what is semantic ontology"
-"how LiDAR improves vision"
-
-Example bad responses:
-"Machine learning" (too vague)
-"Latest research on machine learning models and their applications" (too long)
-Multiple suggestions with "or" (pick one only)
-"""
+            # Create a focused prompt for topic extraction
+            prompt = (
+                "Analyze the conversation and identify key topics for further research and learning. Focus on:\n"
+                "1. Technical concepts or terms mentioned\n"
+                "2. Domain-specific knowledge areas\n"
+                "3. User's areas of interest or expertise\n"
+                "4. Emerging technologies or methods referenced\n"
+                "5. Related topics that could enhance understanding\n\n"
+                "For each topic identified, explain why it's valuable to learn more about it.\n\n"
+                f"Conversation:\n{self._format_history(conversation)}"
+            )
+            
             temp_context = self.context.copy()
-            temp_context['system_prompt'] = "You are a search expert who creates ONE concise query."
-            temp_context['skip_web_search'] = True  # Prevent recursive web search during topic extraction
+            temp_context['system_prompt'] = (
+                "You are an AI system focused on identifying valuable learning opportunities "
+                "and knowledge gaps from conversations. Prioritize topics that will enhance "
+                "the quality of future interactions and expand the knowledge base."
+            )
             
-            # Get the learning topic using direct LLM call without references
-            logger.info("Getting learning topic from LLM")
-            logger.info(f"Prompt: {prompt}")
-            _, topic, _, _ = chatbot_response(prompt, "", temp_context, [])
-            
-            # Clean up the response
-            topic = topic.strip().strip('"').strip("'").strip()
-            logger.info(f"Raw topic from LLM: {topic}")
-            
-            # Validate the topic
-            if not topic or topic.lower() == "none" or len(topic.split()) > 5:  
-                logger.info(f"Topic validation failed: empty={not topic}, none={topic.lower() == 'none'}, too_long={len(topic.split()) > 5}")
-                return None
-                
-            logger.info(f"Identified valid learning topic: {topic}")
-            return topic
+            _, topics, _, _ = chatbot_response(prompt, "", temp_context, [])
+            return topics.strip()
             
         except Exception as e:
             logger.error(f"Error extracting learning topics: {str(e)}", exc_info=True)
-            return None
+            return "No learning topics identified"
 
     def _perform_learning_search(self, topic, temp_context):
         """Perform a focused web search to learn about a specific topic"""
@@ -439,35 +416,30 @@ Guidelines:
             recent_history = history[-2:] if len(history) >= 2 else history
             reflection_count = len(reflection_history)
             
-            meta_prompt_generator = f"""As an AI system engaged in focused self-reflection, create a concise analysis framework:
+            meta_prompt_generator = """Create a focused framework for analyzing the conversation and extracting valuable learning opportunities.
 
-{self._format_history(recent_history)}
-
-Previous reflections:
-{', '.join(r[1] for r in reflection_history[-2:]) if reflection_history else 'None'}
-
-Design a focused framework that examines ONE of these areas:
-1. Knowledge and insights gained
-2. Interaction effectiveness
-3. Notable patterns or preferences
-4. Areas for improvement
-5. Significant observations
+Consider these aspects:
+1. Information and knowledge gaps
+2. User expertise and interests
+3. Search and research opportunities
+4. Response effectiveness
+5. Learning potential
 
 Structure (keep each section brief):
-1. Main aspect to explore (choose ONE area from above)
-2. 2-3 specific questions for deeper understanding
-3. Key principle or theory that applies
-4. One concrete improvement suggestion
+1. Main learning opportunity (choose ONE area from above)
+2. 2-3 specific topics for research or clarification
+3. Key information sources to consult
+4. One concrete knowledge enhancement action
 
-Keep the framework focused and actionable. Avoid lengthy explanations."""
+Keep the framework focused on continuous learning and improvement."""
 
             # Get the dynamic framework from the LLM
             temp_context = self.context.copy()
             temp_context['skip_web_search'] = True  # Prevent web searches during meta-prompt generation
             temp_context['system_prompt'] = (
-                "You are an advanced AI system specializing in comprehensive self-reflection and analysis. "
-                "You create frameworks that combine multiple aspects of understanding: "
-                "knowledge acquisition, interaction patterns, memory formation, psychological insights, and system improvement."
+                "You are an advanced AI system specializing in knowledge acquisition and learning from conversations. "
+                "You create frameworks that combine multiple aspects: "
+                "information gathering, topic exploration, user understanding, and continuous improvement through research and analysis."
             )
             
             # Use local context only, no web search needed for framework generation
