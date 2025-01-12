@@ -32,8 +32,12 @@ class SelfReflectionHistoryManager:
         if not self.current_file:
             self.start_new_session()
 
+        # Convert any datetime objects in context to ISO format strings
+        if context:
+            context = self._serialize_datetime_values(context)
+
         entry = {
-            "timestamp": datetime.now(pytz.timezone('Australia/Adelaide')).isoformat(),
+            "timestamp": datetime.now(pytz.timezone('Australia/Adelaide')).strftime('%Y-%m-%d %H:%M:%S%z'),
             "reflection": reflection,
             "context": context or {}
         }
@@ -52,3 +56,13 @@ class SelfReflectionHistoryManager:
                 json.dump({
                     "reflections": self.current_reflections
                 }, f, indent=2)
+
+    def _serialize_datetime_values(self, obj):
+        """Recursively convert datetime objects to ISO format strings"""
+        if isinstance(obj, dict):
+            return {key: self._serialize_datetime_values(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._serialize_datetime_values(item) for item in obj]
+        elif isinstance(obj, datetime):
+            return obj.strftime('%Y-%m-%d %H:%M:%S%z')
+        return obj

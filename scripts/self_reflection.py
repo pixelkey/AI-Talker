@@ -28,21 +28,25 @@ class SelfReflection:
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
         self.reflection_system_prompt = (
-            "You are an AI system engaged in focused, analytical self-reflection. "
-            "Generate concise, actionable insights while following these guidelines:\n\n"
-            "1. Learning Focus (choose most relevant):\n"
-            "   - Key knowledge gained or gap identified\n"
-            "   - Critical pattern or principle discovered\n"
-            "   - Important user preference or need detected\n\n"
-            "2. Interaction Quality (analyze effectiveness):\n"
-            "   - Response relevance and accuracy\n"
-            "   - Communication clarity and engagement\n"
-            "   - Adaptation to user style\n\n"
-            "3. Improvement Areas (be specific):\n"
-            "   - One concrete action to enhance interaction\n"
-            "   - Specific strategy to address identified gap\n"
-            "   - Clear metric for measuring improvement\n\n"
-            "Keep reflections under 100 words. Focus on actionable insights."
+            "You are an AI system focused on continuous learning and adaptation through conversation analysis. "
+            "Generate concise, actionable insights about your own learning and improvement while following these guidelines:\n\n"
+            "1. My Knowledge Enhancement:\n"
+            "   - What I learned from this conversation\n"
+            "   - Topics I need to research further\n"
+            "   - How this connects to my existing knowledge\n\n"
+            "2. User Interaction Analysis:\n"
+            "   - What topics interest the user\n"
+            "   - How they prefer to receive information\n"
+            "   - Their apparent expertise level\n\n"
+            "3. My Response Quality:\n"
+            "   - How accurate and relevant was my response\n"
+            "   - What information was I missing\n"
+            "   - How effective was my search strategy\n\n"
+            "4. My Improvement Plan:\n"
+            "   - Specific actions I will take to enhance my knowledge\n"
+            "   - Topics I need to research\n"
+            "   - How I will measure my improvement\n\n"
+            "Keep reflections under 100 words. Focus on my learning and adaptation."
         )
         logger.info("SelfReflection initialized")
 
@@ -123,7 +127,7 @@ class SelfReflection:
                             "references": current_refs,
                             "prompt": reflection_prompt,
                             "reflection_number": reflection_count + 1,
-                            "timestamp": datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                            "timestamp": self._parse_timestamp(datetime.now(pytz.timezone('Australia/Adelaide')).isoformat())
                         }
                     )
                     
@@ -214,106 +218,54 @@ class SelfReflection:
     def _extract_learning_topics(self, conversation):
         """Extract key topics that would be valuable to learn more about"""
         try:
-            logger.info("Starting learning topic extraction")
-            # Create a focused prompt to identify learning opportunities
-            prompt = f"""Create ONE short web search query from this conversation. Focus on:
-1. Latest trends or research
-2. Expert opinions
-3. How-to guides
-4. Statistics or data
-
-Current conversation:
-{self._format_history(conversation)}
-
-Instructions:
-- Return ONLY the query, no explanations or alternatives
-- Must be 3-5 words long
-- Include 'how', 'what', 'latest', or 'guide'
-- Focus on most specific aspect
-- If no clear topic, return exactly "None"
-
-Example good responses:
-"latest ML model trends"
-"what is semantic ontology"
-"how LiDAR improves vision"
-
-Example bad responses:
-"Machine learning" (too vague)
-"Latest research on machine learning models and their applications" (too long)
-Multiple suggestions with "or" (pick one only)
-"""
+            # Get the user's original query from conversation
+            user_queries = [msg.strip() for msg in conversation if isinstance(msg, str) and "User:" in msg]
+            original_query = user_queries[-1].replace("User:", "").strip() if user_queries else ""
+            
+            # Create a focused prompt for topic extraction
+            prompt = (
+                "Extract 1-3 specific learning topics from this conversation. For each topic:\n"
+                "- Use 2-4 words only\n"
+                "- Focus on concrete concepts\n"
+                "- Avoid general categories\n\n"
+                "Format: Return only the topics, one per line with a dash prefix.\n"
+                "\n\n"
+                f"Conversation:\n{self._format_history(conversation)}"
+            )
+            
             temp_context = self.context.copy()
-            temp_context['system_prompt'] = "You are a search expert who creates ONE concise query."
-            temp_context['skip_web_search'] = True  # Prevent recursive web search during topic extraction
+            temp_context['system_prompt'] = (
+                "You are a precise topic extractor. Return only the topics in the specified format. "
+                "If no specific topics are found, return exactly: '- no specific topics'"
+            )
+            temp_context['original_query'] = original_query  # Store original query for relevance checking
             
-            # Get the learning topic using direct LLM call without references
-            logger.info("Getting learning topic from LLM")
-            logger.info(f"Prompt: {prompt}")
-            _, topic, _, _ = chatbot_response(prompt, "", temp_context, [])
+            _, topics, _, _ = chatbot_response(prompt, "", temp_context, [])
             
-            # Clean up the response
-            topic = topic.strip().strip('"').strip("'").strip()
-            logger.info(f"Raw topic from LLM: {topic}")
-            
-            # Validate the topic
-            if not topic or topic.lower() == "none" or len(topic.split()) > 5:  
-                logger.info(f"Topic validation failed: empty={not topic}, none={topic.lower() == 'none'}, too_long={len(topic.split()) > 5}")
+            # Clean and validate the topics
+            topic_lines = [t.strip() for t in topics.split('\n') if t.strip().startswith('-')]
+            if not topic_lines or topic_lines[0] == '- no specific topics':
                 return None
                 
-            logger.info(f"Identified valid learning topic: {topic}")
-            return topic
+            return '\n'.join(topic_lines)
             
         except Exception as e:
-            logger.error(f"Error extracting learning topics: {str(e)}", exc_info=True)
+            logger.error(f"Error extracting learning topics: {str(e)}")
             return None
 
     def _perform_learning_search(self, topic, temp_context):
         """Perform a focused web search to learn about a specific topic"""
         try:
-            if not topic:
-                logger.info("No topic provided for learning search")
-                return None
-                
-            # Validate topic before searching
-            if len(topic.split()) > 10 or len(topic) > 100:
-                logger.warning(f"Topic too long or complex: {topic}")
-                return None
-                
-            logger.info(f"Starting learning search for topic: {topic}")
-            # Create a new context specifically for learning search
-            search_context = temp_context.copy()
-            search_context['skip_web_search'] = False  # Enable web search for learning
-            search_context['search_purpose'] = 'learning'
-            search_context['max_search_results'] = 2
+            # Use the original query for relevance checking if available
+            original_query = temp_context.get('original_query', topic)
+            temp_context['relevance_query'] = original_query
             
-            # Log the search context
-            logger.info(f"Search context: skip_web_search={search_context.get('skip_web_search')}, purpose={search_context.get('search_purpose')}")
-            
-            # Perform the search with the cleaned topic
-            logger.info("Performing web search for learning")
-            search_results = determine_and_perform_web_search(topic, "", search_context)
-            
-            # Log the search results structure
-            logger.info(f"Search results type: {type(search_results)}")
-            logger.info(f"Search results keys: {search_results.keys() if isinstance(search_results, dict) else 'Not a dict'}")
-            
-            if search_results and search_results.get('web_results'):
-                # Truncate results if too long
-                web_results = search_results['web_results']
-                if len(web_results) > 500:
-                    web_results = web_results[:497] + "..."
-                    
-                logger.info(f"Found learning content ({len(web_results)} chars)")
-                logger.info(f"First 100 chars of content: {web_results[:100]}...")
-                return web_results
-            else:
-                logger.info(f"No web results found. Search results: {search_results}")
-            
-            logger.info("No learning content found from web search")
-            return None
+            # Perform the search
+            results = determine_and_perform_web_search(topic, "", temp_context)
+            return results
             
         except Exception as e:
-            logger.error(f"Error in learning search: {str(e)}", exc_info=True)
+            logger.error(f"Error performing learning search: {str(e)}")
             return None
 
     def _create_reflection_prompt(self, history, reflection_history=[]):
@@ -439,35 +391,31 @@ Guidelines:
             recent_history = history[-2:] if len(history) >= 2 else history
             reflection_count = len(reflection_history)
             
-            meta_prompt_generator = f"""As an AI system engaged in focused self-reflection, create a concise analysis framework:
+            meta_prompt_generator = """Create a focused framework for analyzing my learning and improvement opportunities from this conversation.
 
-{self._format_history(recent_history)}
-
-Previous reflections:
-{', '.join(r[1] for r in reflection_history[-2:]) if reflection_history else 'None'}
-
-Design a focused framework that examines ONE of these areas:
-1. Knowledge and insights gained
-2. Interaction effectiveness
-3. Notable patterns or preferences
-4. Areas for improvement
-5. Significant observations
+Consider these aspects of my performance:
+1. My knowledge gaps and learning needs
+2. My understanding of user interests
+3. My search and research effectiveness
+4. My response quality
+5. My learning potential
 
 Structure (keep each section brief):
-1. Main aspect to explore (choose ONE area from above)
-2. 2-3 specific questions for deeper understanding
-3. Key principle or theory that applies
-4. One concrete improvement suggestion
+1. Main area where I need to improve (choose ONE from above)
+2. 2-3 specific topics I need to research
+3. Key information sources I should consult
+4. One concrete action I will take to enhance my knowledge
 
-Keep the framework focused and actionable. Avoid lengthy explanations."""
+Keep the framework focused on my continuous learning and improvement."""
 
             # Get the dynamic framework from the LLM
             temp_context = self.context.copy()
             temp_context['skip_web_search'] = True  # Prevent web searches during meta-prompt generation
             temp_context['system_prompt'] = (
-                "You are an advanced AI system specializing in comprehensive self-reflection and analysis. "
-                "You create frameworks that combine multiple aspects of understanding: "
-                "knowledge acquisition, interaction patterns, memory formation, psychological insights, and system improvement."
+                "You are an AI assistant focused on improving yourself through learning. "
+                "Create frameworks that help you identify your knowledge gaps, "
+                "understand user needs better, and enhance your ability to provide accurate "
+                "and helpful responses through continuous learning and research."
             )
             
             # Use local context only, no web search needed for framework generation
@@ -592,3 +540,33 @@ Keep the framework focused and actionable. Avoid lengthy explanations."""
                 current_conversation_refs.append(ref)
         
         return current_conversation_refs if current_conversation_refs else refs
+
+    def _parse_timestamp(self, timestamp_str):
+        """Parse timestamp with timezone information"""
+        try:
+            # If timestamp is already a datetime object, convert to string
+            if isinstance(timestamp_str, datetime):
+                return timestamp_str.strftime('%Y-%m-%d %H:%M:%S%z')
+                
+            # Handle ISO format timestamps
+            if 'T' in timestamp_str:
+                try:
+                    dt = datetime.fromisoformat(timestamp_str)
+                    return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+                except ValueError:
+                    pass
+            
+            # Handle timezone offset in format +HHMM
+            if '+' in timestamp_str:
+                main_part, tz_part = timestamp_str.rsplit('+', 1)
+                if ':' in tz_part:  # Handle +HH:MM format
+                    tz_part = tz_part.replace(':', '')
+                timestamp_str = f"{main_part}+{tz_part}"
+            
+            # Parse with timezone
+            dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S%z')
+            return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+        except ValueError as e:
+            logger.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
+            # Return current time as fallback
+            return datetime.now().strftime('%Y-%m-%d %H:%M:%S%z')

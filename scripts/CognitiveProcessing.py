@@ -37,9 +37,9 @@ def generate_llm_summary(content: str, context: Dict[str, Any]) -> str:
             return response.choices[0].message.content
             
         elif config.MODEL_SOURCE == "local":
-            prompt = f"""You are a helpful assistant that creates concise summaries while preserving key information. When summarizing, clearly separate and label content from 'Internal Reflections' and 'Previous Conversations' if both are present. If only one type is present, label it appropriately.
+            prompt = f"""You are a helpful assistant that creates concise summaries while preserving key details and examples. Focus on maintaining the practical value of the content.
 
-Please provide a concise summary of the following content. If the content contains both internal reflections and previous conversations, separate and label them clearly:
+Please provide a detailed summary of the following content, preserving key information, examples, and practical details:
 
 {content}
 
@@ -64,12 +64,12 @@ def is_content_relevant(content: str, query: str, context: Dict) -> bool:
         return False
         
     start_time = time.time()
-    prompt = f"""Determine if this content is DIRECTLY relevant for answering the query.
-Be VERY strict - only return TRUE if the content contains specific information that helps answer the query.
-Return FALSE for:
-- General or tangentially related information
-- Content about different topics even if they share some keywords
-- Historical conversations that don't directly answer the current query
+    prompt = f"""Determine if this content is relevant for answering the query.
+Consider content relevant if it:
+- Contains information that helps answer the query directly or indirectly
+- Provides context or background information related to the query
+- Includes examples or case studies that illustrate concepts in the query
+- Contains definitions or explanations of terms used in the query
 
 Query: "{query}"
 
@@ -83,7 +83,7 @@ Response (TRUE/FALSE):"""
             response = context["client"].chat.completions.create(
                 model=context["LLM_MODEL"],
                 messages=[
-                    {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow content that DIRECTLY answers the user's query. Be conservative - when in doubt, return FALSE."},
+                    {"role": "system", "content": "You are a relevance filter that identifies content that could help answer the user's query either directly or by providing useful context."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=10,
@@ -94,7 +94,7 @@ Response (TRUE/FALSE):"""
             response = context["client"].chat(
                 model=context["LLM_MODEL"],
                 messages=[
-                    {"role": "system", "content": "You are a strict relevance filter. Your job is to only allow content that DIRECTLY answers the user's query. Be conservative - when in doubt, return FALSE."},
+                    {"role": "system", "content": "You are a relevance filter that identifies content that could help answer the user's query either directly or by providing useful context."},
                     {"role": "user", "content": prompt}
                 ]
             )
@@ -106,7 +106,7 @@ Response (TRUE/FALSE):"""
         return is_relevant
     except Exception as e:
         logger.error(f"Error in relevance check: {str(e)}")
-        return False
+        return True  # Default to including content if check fails
 
 def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max_length: int = 1000, context: Optional[Dict[str, Any]] = None, query: Optional[str] = None) -> str:
     """
@@ -114,15 +114,18 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
     Otherwise, return the original content as is.
     """
     if not context_documents:
+        logger.info("No context documents provided")
         return ""
         
     try:
+        logger.info(f"Processing {len(context_documents)} documents")
         # Sort documents by relevance score if available
         sorted_docs = sorted(
             context_documents, 
             key=lambda x: x.get('score', 0) if isinstance(x, dict) else 0,
             reverse=True
         )
+        logger.info(f"Sorted {len(sorted_docs)} documents")
         
         # Process and filter documents
         filtered_contents = []
@@ -131,14 +134,17 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
             # Extract content based on document type
             if isinstance(doc, dict):
                 content = doc.get('content', '')
+                logger.info(f"Dict document keys: {doc.keys()}")
             elif isinstance(doc, Document):
                 content = doc.page_content
+                logger.info("Found Document type")
             else:
                 logger.warning(f"Unexpected document type: {type(doc)}")
                 continue
                 
             # Skip empty content
             if not content.strip():
+                logger.info("Empty content, skipping")
                 continue
                 
             # Skip reference sections
@@ -147,25 +153,40 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
             
             # Skip if content is just metadata or references
             if not clean_content or clean_content.lower().startswith("references"):
+                logger.info("Content is just references, skipping")
                 continue
                 
             # Check relevance if we have query and context
             if query and context:
                 if is_content_relevant(clean_content, query, context):
                     filtered_contents.append(clean_content)
+                    logger.info("Added relevant content")
+                else:
+                    logger.info("Content not relevant, skipping")
             else:
                 filtered_contents.append(clean_content)
+                logger.info("Added content (no relevance check)")
         
         # If no valid content after filtering
         if not filtered_contents:
+            logger.warning("No valid content after filtering")
+            # Return most relevant document's content as fallback
+            if sorted_docs:
+                first_doc = sorted_docs[0]
+                if isinstance(first_doc, dict):
+                    return first_doc.get('content', '')[:max_length]
+                elif isinstance(first_doc, Document):
+                    return first_doc.page_content[:max_length]
             return ""
             
         # Join all content
         all_content = "\n\n".join(filtered_contents)
         total_length = len(all_content)
+        logger.info(f"Total content length: {total_length}")
             
         # If total length is within limit, return filtered content
         if total_length <= max_length:
+            logger.info("Content within length limit")
             return all_content
             
         logger.info(f"Content exceeded max length ({total_length} > {max_length})")
@@ -173,20 +194,29 @@ def summarize_rag_results(context_documents: Optional[List[Dict[str, Any]]], max
         # Check GPU temperature before using LLM for summarization
         if is_gpu_too_hot():
             logger.warning("GPU temperature too high, falling back to simple truncation")
-            context = None  # Force fallback to simple truncation
+            return all_content[:max_length]
             
         # If content exceeds max length and we have context, use LLM to generate summary
         if context:
             logger.info("Generating LLM summary...")
-            return generate_llm_summary(all_content, context)
-            
-        # Fallback to simple truncation if no context provided
-        logger.warning("No context provided for LLM summary. Falling back to simple truncation.")
-        return all_content[:max_length].rsplit(' ', 1)[0]
+            summary = generate_llm_summary(all_content, context)
+            if summary and len(summary.strip()) > 0:
+                return summary
+                
+        # Fallback to simple truncation if summarization fails
+        logger.warning("Summarization failed or no context provided. Falling back to simple truncation.")
+        return all_content[:max_length]
         
     except Exception as e:
-        logger.error(f"Error summarizing RAG results: {str(e)}")
-        return "" if not context_documents else context_documents[0].get('content', '') if isinstance(context_documents[0], dict) else context_documents[0].page_content
+        logger.error(f"Error in summarize_rag_results: {str(e)}")
+        if context_documents:
+            # Return first document's content as fallback
+            first_doc = context_documents[0]
+            if isinstance(first_doc, dict):
+                return first_doc.get('content', '')[:max_length]
+            elif isinstance(first_doc, Document):
+                return first_doc.page_content[:max_length]
+        return ""
 
 def perform_parallel_web_search(queries: List[str], context: Dict, max_retries: int = 3, retry_delay: int = 2) -> List[Dict]:
     """Perform multiple web searches in parallel"""
@@ -795,7 +825,7 @@ final search terms"""
             alt_queries = response['message']['content'].strip().split('\n')
         
         # Clean up queries
-        alt_queries = [q.strip().replace('"', '').replace("'", "").replace(",", "") for q in alt_queries if q.strip()]
+        alt_queries = [q.strip().replace('"', '').replace("'", "").replace(",", "").strip() for q in alt_queries if q.strip()]
         return alt_queries[:3]  # Limit to top 3 alternatives
         
     except Exception as e:
@@ -1005,7 +1035,7 @@ SEARCH_QUERY: new york weather forecast"""
                     break
             
             if not search_query:  # If LLM fails to generate query
-                search_query = ' '.join(query_lower.split()[:5])  # Use first 5 words as fallback
+                search_query = ' '.join(query.lower().split()[:5])  # Use first 5 words as fallback
                 logging.warning(f"LLM failed to generate search query, using simplified: {search_query}")
             else:
                 logging.info(f"Using LLM generated search query: {search_query}")
@@ -1076,7 +1106,7 @@ SEARCH_QUERY: new york weather forecast"""
                         web_content.append({
                             'title': title,
                             'link': url,
-                            'content': content[:2000]  # Limit content length but keep substantial portion
+                            'content': content[:5000]  # Increased from 2000 to allow more context
                         })
                         logging.info(f"Added content from: {title}")
                 except Exception as e:
@@ -1161,7 +1191,7 @@ Source: [Primary source name]"""
                     response = context["client"].chat.completions.create(
                         model=context["LLM_MODEL"],
                         messages=[{"role": "user", "content": prompt}],
-                        max_tokens=150,
+                        max_tokens=500,  # Increased from 150 to allow for longer summaries
                     )
                     result["web_results"] = response.choices[0].message.content.strip()
                 else:
