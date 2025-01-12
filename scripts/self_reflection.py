@@ -28,25 +28,25 @@ class SelfReflection:
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
         self.reflection_system_prompt = (
-            "You are an AI system focused on continuous learning and adaptation through conversation analysis."
-            "Generate concise, actionable insights while following these guidelines:\n\n"
-            "1. Knowledge Enhancement:\n"
-            "   - New information learned from conversation\n"
-            "   - Topics requiring deeper research\n"
-            "   - Connections to existing knowledge\n\n"
-            "2. User Understanding:\n"
-            "   - Preferences and interests identified\n"
-            "   - Communication style and needs\n"
-            "   - Domain expertise level\n\n"
-            "3. Conversation Analysis:\n"
-            "   - Response accuracy and relevance\n"
-            "   - Information gaps identified\n"
-            "   - Search effectiveness\n\n"
-            "4. Improvement Strategy:\n"
-            "   - Specific action to enhance knowledge\n"
-            "   - Topics to research further\n"
-            "   - Clear success metrics\n\n"
-            "Keep reflections under 100 words. Focus on learning and adaptation."
+            "You are an AI system focused on continuous learning and adaptation through conversation analysis. "
+            "Generate concise, actionable insights about your own learning and improvement while following these guidelines:\n\n"
+            "1. My Knowledge Enhancement:\n"
+            "   - What I learned from this conversation\n"
+            "   - Topics I need to research further\n"
+            "   - How this connects to my existing knowledge\n\n"
+            "2. User Interaction Analysis:\n"
+            "   - What topics interest the user\n"
+            "   - How they prefer to receive information\n"
+            "   - Their apparent expertise level\n\n"
+            "3. My Response Quality:\n"
+            "   - How accurate and relevant was my response\n"
+            "   - What information was I missing\n"
+            "   - How effective was my search strategy\n\n"
+            "4. My Improvement Plan:\n"
+            "   - Specific actions I will take to enhance my knowledge\n"
+            "   - Topics I need to research\n"
+            "   - How I will measure my improvement\n\n"
+            "Keep reflections under 100 words. Focus on my learning and adaptation."
         )
         logger.info("SelfReflection initialized")
 
@@ -218,6 +218,10 @@ class SelfReflection:
     def _extract_learning_topics(self, conversation):
         """Extract key topics that would be valuable to learn more about"""
         try:
+            # Get the user's original query from conversation
+            user_queries = [msg.strip() for msg in conversation if isinstance(msg, str) and "User:" in msg]
+            original_query = user_queries[-1].replace("User:", "").strip() if user_queries else ""
+            
             # Create a focused prompt for topic extraction
             prompt = (
                 "Extract 1-3 specific learning topics from this conversation. For each topic:\n"
@@ -237,6 +241,7 @@ class SelfReflection:
                 "You are a precise topic extractor. Return only the topics in the specified format. "
                 "If no specific topics are found, return exactly: '- no specific topics'"
             )
+            temp_context['original_query'] = original_query  # Store original query for relevance checking
             
             _, topics, _, _ = chatbot_response(prompt, "", temp_context, [])
             
@@ -248,56 +253,22 @@ class SelfReflection:
             return '\n'.join(topic_lines)
             
         except Exception as e:
-            logger.error(f"Error extracting learning topics: {str(e)}", exc_info=True)
+            logger.error(f"Error extracting learning topics: {str(e)}")
             return None
 
     def _perform_learning_search(self, topic, temp_context):
         """Perform a focused web search to learn about a specific topic"""
         try:
-            if not topic:
-                logger.info("No topic provided for learning search")
-                return None
-                
-            # Validate topic before searching
-            if len(topic.split()) > 10 or len(topic) > 100:
-                logger.warning(f"Topic too long or complex: {topic}")
-                return None
-                
-            logger.info(f"Starting learning search for topic: {topic}")
-            # Create a new context specifically for learning search
-            search_context = temp_context.copy()
-            search_context['skip_web_search'] = False  # Enable web search for learning
-            search_context['search_purpose'] = 'learning'
-            search_context['max_search_results'] = 2
+            # Use the original query for relevance checking if available
+            original_query = temp_context.get('original_query', topic)
+            temp_context['relevance_query'] = original_query
             
-            # Log the search context
-            logger.info(f"Search context: skip_web_search={search_context.get('skip_web_search')}, purpose={search_context.get('search_purpose')}")
-            
-            # Perform the search with the cleaned topic
-            logger.info("Performing web search for learning")
-            search_results = determine_and_perform_web_search(topic, "", search_context)
-            
-            # Log the search results structure
-            logger.info(f"Search results type: {type(search_results)}")
-            logger.info(f"Search results keys: {search_results.keys() if isinstance(search_results, dict) else 'Not a dict'}")
-            
-            if search_results and search_results.get('web_results'):
-                # Truncate results if too long
-                web_results = search_results['web_results']
-                if len(web_results) > 500:
-                    web_results = web_results[:497] + "..."
-                    
-                logger.info(f"Found learning content ({len(web_results)} chars)")
-                logger.info(f"First 100 chars of content: {web_results[:100]}...")
-                return web_results
-            else:
-                logger.info(f"No web results found. Search results: {search_results}")
-            
-            logger.info("No learning content found from web search")
-            return None
+            # Perform the search
+            results = determine_and_perform_web_search(topic, "", temp_context)
+            return results
             
         except Exception as e:
-            logger.error(f"Error in learning search: {str(e)}", exc_info=True)
+            logger.error(f"Error performing learning search: {str(e)}")
             return None
 
     def _create_reflection_prompt(self, history, reflection_history=[]):
@@ -423,30 +394,31 @@ Guidelines:
             recent_history = history[-2:] if len(history) >= 2 else history
             reflection_count = len(reflection_history)
             
-            meta_prompt_generator = """Create a focused framework for analyzing the conversation and extracting valuable learning opportunities.
+            meta_prompt_generator = """Create a focused framework for analyzing my learning and improvement opportunities from this conversation.
 
-Consider these aspects:
-1. Information and knowledge gaps
-2. User expertise and interests
-3. Search and research opportunities
-4. Response effectiveness
-5. Learning potential
+Consider these aspects of my performance:
+1. My knowledge gaps and learning needs
+2. My understanding of user interests
+3. My search and research effectiveness
+4. My response quality
+5. My learning potential
 
 Structure (keep each section brief):
-1. Main learning opportunity (choose ONE area from above)
-2. 2-3 specific topics for research or clarification
-3. Key information sources to consult
-4. One concrete knowledge enhancement action
+1. Main area where I need to improve (choose ONE from above)
+2. 2-3 specific topics I need to research
+3. Key information sources I should consult
+4. One concrete action I will take to enhance my knowledge
 
-Keep the framework focused on continuous learning and improvement."""
+Keep the framework focused on my continuous learning and improvement."""
 
             # Get the dynamic framework from the LLM
             temp_context = self.context.copy()
             temp_context['skip_web_search'] = True  # Prevent web searches during meta-prompt generation
             temp_context['system_prompt'] = (
-                "You are an advanced AI system specializing in knowledge acquisition and learning from conversations. "
-                "You create frameworks that combine multiple aspects: "
-                "information gathering, topic exploration, user understanding, and continuous improvement through research and analysis."
+                "You are an AI assistant focused on improving yourself through learning. "
+                "Create frameworks that help you identify your knowledge gaps, "
+                "understand user needs better, and enhance your ability to provide accurate "
+                "and helpful responses through continuous learning and research."
             )
             
             # Use local context only, no web search needed for framework generation
