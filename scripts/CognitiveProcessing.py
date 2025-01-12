@@ -839,16 +839,19 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
         is_explicit_search = any(term in query_lower for term in explicit_search_terms)
         needs_current_time = any(term in query_lower for term in time_related_terms)
         
+        # Initialize search terms list
+        search_terms = []
+        
         # Immediate search for time-related queries
         if needs_current_time and any(word in query_lower for word in ["time", "hour", "today", "now"]):
             result["needs_web_search"] = True
-            search_query = query
         elif is_explicit_search:
             # Use the query directly, just clean it up
-            search_query = query_lower
+            cleaned_query = query_lower
             for term in ["search for", "look up", "find", "what is", "how to"]:
-                search_query = search_query.replace(term, "").strip()
+                cleaned_query = cleaned_query.replace(term, "").strip()
             result["needs_web_search"] = True
+            search_terms = [cleaned_query]  # Use cleaned query as a search term suggestion
         else:
             # Evaluate if information is available in context or needs web search
             prompt = f"""Analyze if this query requires a web search. Be very strict about avoiding unnecessary searches.
@@ -960,31 +963,65 @@ SEARCH_TERMS: [If YES or if RAG only has partial info, provide 2-5 key search te
                             # End of search terms section
                             break
                     
-                    # Use the first search term if available, otherwise use original query
-                    if search_terms:
-                        search_query = search_terms[0]  # Use first suggested search term
-                        logging.info(f"Using LLM suggested search query: {search_query}")
-                    else:
-                        search_query = query
-                        logging.info(f"No LLM suggestions, using original query: {search_query}")
-                        
-                    # Skip search if terms are N/A or empty
-                    if not search_query or search_query.upper() in ["N/A", "NA", "NONE"]:
-                        return {
-                            "needs_web_search": False,
-                            "web_results": ""
-                        }
-                    
-                    # Clean up search query
-                    search_query = search_query.replace('"', '').replace("'", "").replace(",", "").strip()
-                    if not search_query:  # Fallback if query is empty after cleaning
-                        search_query = query
-                        logging.info(f"Using fallback query: {search_query}")
-                        
                     if llm_response.get("NEEDS_SEARCH", "NO").upper() == "YES":
                         result["needs_web_search"] = True
-                else:
-                    search_query = ""
+
+        # If search is needed, generate optimized search query using LLM
+        if result["needs_web_search"]:
+            search_query_prompt = f"""Generate a clear and effective search query for this user request.
+The query should be specific, focused, and optimized for web search.
+Remove any conversational elements and focus on the key information needed.
+
+User Request: {query}
+{"Suggested Search Terms: " + ", ".join(search_terms) if search_terms else ""}
+
+Response format:
+SEARCH_QUERY: [2-5 word optimized search query]
+
+Example:
+User: "What's the weather like in New York?"
+SEARCH_QUERY: new york weather forecast"""
+
+            if config.MODEL_SOURCE == "openai":
+                response = context["client"].chat.completions.create(
+                    model=context["LLM_MODEL"],
+                    messages=[{"role": "user", "content": search_query_prompt}],
+                    max_tokens=50,
+                    temperature=0.1
+                )
+                search_query_response = response.choices[0].message.content.strip()
+            else:
+                response = context["client"].chat(
+                    model=context["LLM_MODEL"],
+                    messages=[{"role": "user", "content": search_query_prompt}],
+                )
+                search_query_response = response['message']['content'].strip()
+
+            # Extract search query
+            search_query = ""
+            for line in search_query_response.split('\n'):
+                if line.startswith('SEARCH_QUERY:'):
+                    search_query = line.replace('SEARCH_QUERY:', '').strip()
+                    break
+            
+            if not search_query:  # If LLM fails to generate query
+                search_query = ' '.join(query_lower.split()[:5])  # Use first 5 words as fallback
+                logging.warning(f"LLM failed to generate search query, using simplified: {search_query}")
+            else:
+                logging.info(f"Using LLM generated search query: {search_query}")
+            
+            # Skip search if terms are N/A or empty
+            if not search_query or search_query.upper() in ["N/A", "NA", "NONE"]:
+                return {
+                    "needs_web_search": False,
+                    "web_results": ""
+                }
+            
+            # Clean up search query
+            search_query = search_query.replace('"', '').replace("'", "").replace(",", "").strip()
+        else:
+            search_query = ""
+        
         # Perform web search if needed
         if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
