@@ -21,37 +21,38 @@ def retrieve_and_format_references(input_text: str, context: Dict) -> Tuple[str,
     """
     # Skip if web search is disabled
     if context.get('skip_web_search', False):
-        return "", None, None
+        return "", [], ""
         
     # Normalize the user's input text
     normalized_input = normalize_text(input_text)
     logging.info(f"Normalized input: {normalized_input}")
 
-    # Retrieve relevant documents
+    # 1. Retrieve relevant documents
     filtered_docs = retrieve_relevant_documents(normalized_input, context)
+    logging.info(f"Retrieved {len(filtered_docs) if filtered_docs else 0} documents")
     if not filtered_docs:
-        return "", None, None
+        return "", [], "No relevant documents found."
 
-    # Construct the references
-    references = build_references(filtered_docs, context if True else None)
+    # 2. Format references
+    references = build_references(filtered_docs, context)
+    logging.info(f"Built references: {bool(references)}")
     if not references:
-        return "", None, None
+        return "", [], "No formatted references available."
 
-    # Build the context documents for LLM prompt, passing the query for relevance checking
-    context_documents = summarize_rag_results(filtered_docs, context=context, query=normalized_input)
-
-    return references, filtered_docs, context_documents
+    # 3. Summarize if over character limit
+    logging.info(f"About to summarize {len(filtered_docs)} documents")
+    summarized_context = summarize_rag_results(filtered_docs, context=context, query=normalized_input)
+    if not summarized_context:
+        # If summarization fails, use original references
+        summarized_context = references
+        logging.info("Using original references as fallback")
+    
+    logging.info(f"RAG Summary: {summarized_context[:200]}...")
+    return summarized_context, filtered_docs, summarized_context
 
 def chatbot_response(input_text, context_documents, context, history):
     """
     Handle user input, generate a response, and update the conversation history.
-    Args:
-        input_text (str): The user's input.
-        context_documents (str): The context documents for the LLM.
-        context (dict): Context containing client, memory, and other settings.
-        history (list): Session state storing chat history.
-    Returns:
-        Tuple: Updated chat history, LLM response, references, and cleared input.
     """
     logger = logging.getLogger(__name__)
     # Get current time from context and parse it
@@ -67,14 +68,14 @@ def chatbot_response(input_text, context_documents, context, history):
     if formatted_history:
         formatted_history = f"Conversation History:\n{formatted_history}\n"
     
-    # Get initial references and context documents (RAG results already evaluated for relevance)
+    # Get references and context documents (already filtered and summarized if needed)
     references, filtered_docs, initial_context = retrieve_and_format_references(input_text, context)
     
     # If we have context from RAG, use it, otherwise use provided context_documents
     context_documents = initial_context if initial_context else context_documents
     
     # Check if web search is needed based on RAG results
-    web_search_results = {"needs_web_search": False, "web_results": ""} if context.get('skip_web_search', False) else determine_and_perform_web_search(input_text, context_documents or "", context)
+    web_search_results = {"needs_web_search": False, "web_results": ""} if context.get('skip_web_search', False) else determine_and_perform_web_search(input_text, references or "", context)
     
     # Initialize final references and context
     final_references = []
@@ -91,7 +92,6 @@ def chatbot_response(input_text, context_documents, context, history):
         final_context.append(web_ref)
         
         # Format web search results for both display and saving
-        # Store as assistant message for proper context
         timestamp_msg = f"[{formatted_time}]\nUser: {input_text}"
         history.append([timestamp_msg, f"[{formatted_time}]\nBot: {web_ref}"])
         
@@ -99,7 +99,7 @@ def chatbot_response(input_text, context_documents, context, history):
         if context.get("chat_manager"):
             context["chat_manager"].save_history(history)
     
-    # Add RAG results if they exist (after web search to prioritize recent context)
+    # Add RAG results if they exist (already summarized if needed)
     if references:
         final_references.append(references)
         final_context.append(references)
@@ -142,13 +142,25 @@ def retrieve_relevant_documents(normalized_input, context):
     Retrieve relevant documents using similarity search.
     """
     try:
+        if not context.get("vector_store"):
+            logging.warning("No vector store available")
+            return []
+
+        if not context.get("embeddings"):
+            logging.warning("No embeddings model available")
+            return []
+
+        if not context.get("EMBEDDING_DIM"):
+            logging.warning("No embedding dimension specified")
+            return []
+
         search_results = similarity_search_with_score(
             normalized_input, context["vector_store"], context["embeddings"], context["EMBEDDING_DIM"]
         )
-        logging.info("Retrieved documents with scores.")
+        logging.info(f"Retrieved {len(search_results) if search_results else 0} documents with scores.")
     except KeyError as e:
         logging.error(f"Error while retrieving documents: {e}")
-        return None
+        return []
 
     # Filter the results based on a similarity score threshold
     filtered_results = [
