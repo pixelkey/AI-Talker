@@ -1115,52 +1115,6 @@ SEARCH_QUERY: new york weather forecast"""
             
             # Summarize web content using LLM
             if web_content:
-                # First evaluate RAG results for relevance
-                if rag_summary:
-                    rag_eval_prompt = f"""Evaluate if this RAG context contains information that directly answers or is relevant to the user's query.
-IMPORTANT: IGNORE any references or citations sections. Only evaluate the actual content.
-If you see "REFERENCES:" or similar sections, completely disregard them.
-
-Query: {query}
-
-RAG Context:
-{rag_summary}
-
-Response format:
-RELEVANT: [yes/no]
-SUMMARY: [1-2 sentence summary of ONLY the relevant content, or 'NOT_RELEVANT' if nothing relevant found]
-
-Example response:
-If the RAG context only contains references or chat history that's not directly relevant, respond with:
-RELEVANT: no
-SUMMARY: NOT_RELEVANT"""
-
-                    if config.MODEL_SOURCE == "openai":
-                        rag_response = context["client"].chat.completions.create(
-                            model=context["LLM_MODEL"],
-                            messages=[{"role": "user", "content": rag_eval_prompt}],
-                            max_tokens=100,
-                        )
-                        rag_eval = rag_response.choices[0].message.content.strip()
-                    else:
-                        rag_response = context["client"].chat(
-                            model=context["LLM_MODEL"],
-                            messages=[{"role": "user", "content": rag_eval_prompt}],
-                        )
-                        rag_eval = rag_response['message']['content'].strip()
-
-                    # Parse RAG evaluation
-                    rag_lines = rag_eval.split('\n')
-                    is_rag_relevant = any('yes' in line.lower() for line in rag_lines if line.startswith('RELEVANT:'))
-                    if is_rag_relevant:
-                        summary_lines = [line for line in rag_lines if line.startswith('SUMMARY:')]
-                        if summary_lines and 'NOT_RELEVANT' not in summary_lines[0].upper():
-                            rag_summary = summary_lines[0].replace('SUMMARY:', '').strip()
-                        else:
-                            rag_summary = None
-                    else:
-                        rag_summary = None
-
                 web_content_str = "\n\n".join([
                     f"Source: {item['title']}\n"
                     f"URL: {item['link']}\n"

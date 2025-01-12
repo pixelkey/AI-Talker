@@ -68,14 +68,8 @@ def chatbot_response(input_text, context_documents, context, history):
     if formatted_history:
         formatted_history = f"Conversation History:\n{formatted_history}\n"
     
-    # Get references and context documents (already filtered and summarized if needed)
-    references, filtered_docs, initial_context = retrieve_and_format_references(input_text, context)
-    
-    # If we have context from RAG, use it, otherwise use provided context_documents
-    context_documents = initial_context if initial_context else context_documents
-    
     # Check if web search is needed based on RAG results
-    web_search_results = {"needs_web_search": False, "web_results": ""} if context.get('skip_web_search', False) else determine_and_perform_web_search(input_text, references or "", context)
+    web_search_results = {"needs_web_search": False, "web_results": ""} if context.get('skip_web_search', False) else determine_and_perform_web_search(input_text, context_documents or "", context)
     
     # Initialize final references and context
     final_references = []
@@ -100,9 +94,9 @@ def chatbot_response(input_text, context_documents, context, history):
             context["chat_manager"].save_history(history)
     
     # Add RAG results if they exist (already summarized if needed)
-    if references:
-        final_references.append(references)
-        final_context.append(references)
+    if context_documents:
+        final_references.append(context_documents)
+        final_context.append(context_documents)
     
     # If no results at all, add placeholder
     if not final_references:
