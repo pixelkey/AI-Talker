@@ -1111,7 +1111,7 @@ SEARCH_QUERY: new york weather forecast"""
                             web_content.append({
                                 'title': title,
                                 'link': url,
-                                'content': content[:5000]  # Increased from 2000 to allow more context
+                                'content': content[:2000]  # Increased from 2000 to allow more context
                             })
                             logging.info(f"Added content from: {title}")
                     except Exception as e:
