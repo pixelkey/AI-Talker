@@ -64,19 +64,22 @@ def is_content_relevant(content: str, query: str, context: Dict) -> bool:
         return False
         
     start_time = time.time()
-    prompt = f"""Determine if this content is relevant for answering the query.
+    prompt = f"""Determine if this content has ANY relevance to answering the query.
 Consider content relevant if it:
-- Contains information that helps answer the query directly or indirectly
-- Provides context or background information related to the query
-- Includes examples or case studies that illustrate concepts in the query
-- Contains definitions or explanations of terms used in the query
+- Contains ANY information related to the query topic
+- Mentions ANY terms or concepts from the query
+- Could provide ANY context or background
+- Has ANY connection to the subject matter
+- Could be useful even if only tangentially related
+
+Be very lenient - if there's ANY possible connection to the query, consider it relevant.
 
 Query: "{query}"
 
 Content:
 {content[:1000]}
 
-Response (TRUE/FALSE):"""
+Respond ONLY with TRUE or FALSE. Default to TRUE if unsure."""
     
     try:
         if config.MODEL_SOURCE == "openai":
@@ -1072,67 +1075,69 @@ SEARCH_QUERY: new york weather forecast"""
                 result["web_results"] = "No search results found."
                 return result
                 
-            # Evaluate search results for relevance
-            needs_followup, followup_query, filtered_results = evaluate_search_results(search_results, query, context)
-            
-            # Process each filtered result
-            for result_item in filtered_results:
-                try:
-                    # Extract title and link from search result
-                    title = result_item.get('title', '')
-                    url = result_item.get('link', '')  # News search uses 'link'
-                    if not url:
-                        url = result_item.get('url', '')  # Text search might use 'url'
-                    if not url:
-                        url = result_item.get('href', '')  # Text search might use 'href'
-                    
-                    # Get content from fresh_content first, then fall back to body/snippet
-                    content = result_item.get('fresh_content', '')  # Try fresh content first
-                    if not content:
-                        content = result_item.get('body', '')  # Fall back to body
-                    if not content:
-                        content = result_item.get('snippet', '')  # Fall back to snippet
-                    
-                    if not url or not title or not content:
-                        logging.warning(f"Skipping result due to missing data: {result_item}")
-                        continue
-                        
-                    # Log search result metadata
-                    logging.info(f"Found search result: Title='{title}' URL='{url}'")
-                    logging.debug(f"Content preview: {content[:100]}...")
-                    
-                    # Only include substantial content
-                    if len(content.strip()) > 100:  # Ensure we have meaningful content
-                        web_content.append({
-                            'title': title,
-                            'link': url,
-                            'content': content[:5000]  # Increased from 2000 to allow more context
-                        })
-                        logging.info(f"Added content from: {title}")
-                except Exception as e:
-                    logging.warning(f"Error processing search result: {str(e)}")
-                    continue
-            
-            # Summarize web content using LLM
-            if web_content:
-                web_content_str = "\n\n".join([
-                    f"Source: {item['title']}\n"
-                    f"URL: {item['link']}\n"
-                    f"Content: {item['content']}\n"
-                    "---" for item in web_content[:3]  # Limit to top 3 sources for better summaries
-                ])
+            # Ensure search_results is a list of dictionaries
+            if isinstance(search_results, list):
+                # Evaluate search results for relevance
+                needs_followup, followup_query, filtered_results = evaluate_search_results(search_results, query, context)
                 
-                # Construct prompt including relevant RAG context if any
-                prompt = f"""Analyze and summarize the key information from these search results that answers the user's query.
+                # Process each filtered result
+                for result_item in filtered_results:
+                    try:
+                        # Extract title and link from search result
+                        title = result_item.get('title', '')
+                        url = result_item.get('link', '')  # News search uses 'link'
+                        if not url:
+                            url = result_item.get('url', '')  # Text search might use 'url'
+                        if not url:
+                            url = result_item.get('href', '')  # Text search might use 'href'
+                        
+                        # Get content from fresh_content first, then fall back to body/snippet
+                        content = result_item.get('fresh_content', '')  # Try fresh content first
+                        if not content:
+                            content = result_item.get('body', '')  # Fall back to body
+                        if not content:
+                            content = result_item.get('snippet', '')  # Fall back to snippet
+                        
+                        if not url or not title or not content:
+                            logging.warning(f"Skipping result due to missing data: {result_item}")
+                            continue
+                        
+                        # Log search result metadata
+                        logging.info(f"Found search result: Title='{title}' URL='{url}'")
+                        logging.debug(f"Content preview: {content[:100]}...")
+                        
+                        # Only include substantial content
+                        if len(content.strip()) > 100:  # Ensure we have meaningful content
+                            web_content.append({
+                                'title': title,
+                                'link': url,
+                                'content': content[:5000]  # Increased from 2000 to allow more context
+                            })
+                            logging.info(f"Added content from: {title}")
+                    except Exception as e:
+                        logging.warning(f"Error processing search result: {str(e)}")
+                        continue
+            
+                # Summarize web content using LLM
+                if web_content:
+                    web_content_str = "\n\n".join([
+                        f"Source: {item['title']}\n"
+                        f"URL: {item['link']}\n"
+                        f"Content: {item['content']}\n"
+                        "---" for item in web_content[:3]  # Limit to top 3 sources for better summaries
+                    ])
+                    
+                    # Construct prompt including relevant RAG context if any
+                    prompt = f"""Analyze and summarize the key information from these search results that answers the user's query.
 Focus on the most recent and relevant information from ALL provided sources. Combine information from different sources to provide a comprehensive summary.
 
 Query: {query}
 """
 
-                if rag_summary:
-                    prompt += f"\nRelevant Context:\n{rag_summary}\n"
+                    if rag_summary:
+                        prompt += f"\nRelevant Context:\n{rag_summary}\n"
 
-                prompt += f"""
+                    prompt += f"""
 Search Results:
 {web_content_str}
 
@@ -1141,28 +1146,28 @@ Key Information: [Main findings or answer]
 Additional Details: [Any relevant context or supporting information]
 Source: [Primary source name]"""
 
-                if config.MODEL_SOURCE == "openai":
-                    response = context["client"].chat.completions.create(
-                        model=context["LLM_MODEL"],
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=500,  # Increased from 150 to allow for longer summaries
-                    )
-                    result["web_results"] = response.choices[0].message.content.strip()
-                else:
-                    response = context["client"].chat(
-                        model=context["LLM_MODEL"],
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    result["web_results"] = response['message']['content'].strip()
+                    if config.MODEL_SOURCE == "openai":
+                        response = context["client"].chat.completions.create(
+                            model=context["LLM_MODEL"],
+                            messages=[{"role": "user", "content": prompt}],
+                            max_tokens=500,  # Increased from 150 to allow for longer summaries
+                        )
+                        result["web_results"] = response.choices[0].message.content.strip()
+                    else:
+                        response = context["client"].chat(
+                            model=context["LLM_MODEL"],
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+                        result["web_results"] = response['message']['content'].strip()
+                        
+                    logging.info(f"Summarized web search results: {result['web_results']}")
                     
-                logging.info(f"Summarized web search results: {result['web_results']}")
-                
-                # Get detailed content from web pages
-                detailed_content = get_detailed_web_content(search_results, query, context)  # Pass original search_results instead of filtered_results
-                
-                # If we have detailed content, add it to the results
-                if detailed_content:
-                    result["web_results"] += "\n\nDetailed Information:\n" + detailed_content
+                    # Get detailed content from web pages
+                    detailed_content = get_detailed_web_content(search_results, query, context)  # Pass original search_results instead of filtered_results
+                    
+                    # If we have detailed content, add it to the results
+                    if detailed_content:
+                        result["web_results"] += "\n\nDetailed Information:\n" + detailed_content
             else:
                 logging.warning("No valid search results found")
                 result["web_results"] = "No search results."
