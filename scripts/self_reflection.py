@@ -575,6 +575,18 @@ Keep the framework focused on continuous learning and improvement."""
     def _parse_timestamp(self, timestamp_str):
         """Parse timestamp with timezone information"""
         try:
+            # If timestamp is already a datetime object, convert to string
+            if isinstance(timestamp_str, datetime):
+                return timestamp_str.strftime('%Y-%m-%d %H:%M:%S%z')
+                
+            # Handle ISO format timestamps
+            if 'T' in timestamp_str:
+                try:
+                    dt = datetime.fromisoformat(timestamp_str)
+                    return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+                except ValueError:
+                    pass
+            
             # Handle timezone offset in format +HHMM
             if '+' in timestamp_str:
                 main_part, tz_part = timestamp_str.rsplit('+', 1)
@@ -583,8 +595,9 @@ Keep the framework focused on continuous learning and improvement."""
                 timestamp_str = f"{main_part}+{tz_part}"
             
             # Parse with timezone
-            return datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S%z')
+            dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S%z')
+            return dt.strftime('%Y-%m-%d %H:%M:%S%z')
         except ValueError as e:
             logger.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
             # Return current time as fallback
-            return datetime.now()
+            return datetime.now().strftime('%Y-%m-%d %H:%M:%S%z')
