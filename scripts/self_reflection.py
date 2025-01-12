@@ -127,7 +127,7 @@ class SelfReflection:
                             "references": current_refs,
                             "prompt": reflection_prompt,
                             "reflection_number": reflection_count + 1,
-                            "timestamp": datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                            "timestamp": self._parse_timestamp(datetime.now(pytz.timezone('Australia/Adelaide')).isoformat())
                         }
                     )
                     
@@ -220,29 +220,36 @@ class SelfReflection:
         try:
             # Create a focused prompt for topic extraction
             prompt = (
-                "Analyze the conversation and identify key topics for further research and learning. Focus on:\n"
-                "1. Technical concepts or terms mentioned\n"
-                "2. Domain-specific knowledge areas\n"
-                "3. User's areas of interest or expertise\n"
-                "4. Emerging technologies or methods referenced\n"
-                "5. Related topics that could enhance understanding\n\n"
-                "For each topic identified, explain why it's valuable to learn more about it.\n\n"
+                "Extract 1-3 specific learning topics from this conversation. For each topic:\n"
+                "- Use 2-4 words only\n"
+                "- Focus on concrete concepts\n"
+                "- Avoid general categories\n\n"
+                "Format: Return only the topics, one per line with a dash prefix.\n"
+                "Example output:\n"
+                "- neural network architectures\n"
+                "- docker containerization\n"
+                "- API authentication methods\n\n"
                 f"Conversation:\n{self._format_history(conversation)}"
             )
             
             temp_context = self.context.copy()
             temp_context['system_prompt'] = (
-                "You are an AI system focused on identifying valuable learning opportunities "
-                "and knowledge gaps from conversations. Prioritize topics that will enhance "
-                "the quality of future interactions and expand the knowledge base."
+                "You are a precise topic extractor. Return only the topics in the specified format. "
+                "If no specific topics are found, return exactly: '- no specific topics'"
             )
             
             _, topics, _, _ = chatbot_response(prompt, "", temp_context, [])
-            return topics.strip()
+            
+            # Clean and validate the topics
+            topic_lines = [t.strip() for t in topics.split('\n') if t.strip().startswith('-')]
+            if not topic_lines or topic_lines[0] == '- no specific topics':
+                return None
+                
+            return '\n'.join(topic_lines)
             
         except Exception as e:
             logger.error(f"Error extracting learning topics: {str(e)}", exc_info=True)
-            return "No learning topics identified"
+            return None
 
     def _perform_learning_search(self, topic, temp_context):
         """Perform a focused web search to learn about a specific topic"""
@@ -564,3 +571,20 @@ Keep the framework focused on continuous learning and improvement."""
                 current_conversation_refs.append(ref)
         
         return current_conversation_refs if current_conversation_refs else refs
+
+    def _parse_timestamp(self, timestamp_str):
+        """Parse timestamp with timezone information"""
+        try:
+            # Handle timezone offset in format +HHMM
+            if '+' in timestamp_str:
+                main_part, tz_part = timestamp_str.rsplit('+', 1)
+                if ':' in tz_part:  # Handle +HH:MM format
+                    tz_part = tz_part.replace(':', '')
+                timestamp_str = f"{main_part}+{tz_part}"
+            
+            # Parse with timezone
+            return datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S%z')
+        except ValueError as e:
+            logger.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
+            # Return current time as fallback
+            return datetime.now()
