@@ -291,7 +291,7 @@ class TTSManager:
                         chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='fast',  # Changed from standard to ultra_fast for memory efficiency
+                        preset='ultra_fast',  # Changed from standard to ultra_fast for memory efficiency
                         use_deterministic_seed=True,
                         num_autoregressive_samples=2,  # Keep at 1 for memory efficiency
                         diffusion_iterations=30,
