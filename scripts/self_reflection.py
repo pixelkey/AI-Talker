@@ -229,10 +229,7 @@ class SelfReflection:
                 "- Focus on concrete concepts\n"
                 "- Avoid general categories\n\n"
                 "Format: Return only the topics, one per line with a dash prefix.\n"
-                "Example output:\n"
-                "- neural network architectures\n"
-                "- docker containerization\n"
-                "- API authentication methods\n\n"
+                "\n\n"
                 f"Conversation:\n{self._format_history(conversation)}"
             )
             
