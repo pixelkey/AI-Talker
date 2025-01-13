@@ -79,11 +79,9 @@ def chatbot_response(input_text, context_documents, context, history):
     if formatted_history:
         final_context.append(formatted_history)
     
-    # Add web search results if they exist
+    # Add web search results if they exist and haven't been included yet
     if web_search_results["needs_web_search"] and web_search_results["web_results"]:
         web_ref = "Web Search Results:\n" + web_search_results["web_results"]
-        final_references.append(web_ref)
-        final_context.append(web_ref)
         
         # Format web search results for both display and saving
         timestamp_msg = f"[{formatted_time}]\nUser: {input_text}"
@@ -93,13 +91,16 @@ def chatbot_response(input_text, context_documents, context, history):
         if context.get("chat_manager"):
             context["chat_manager"].save_history(history)
     
-    # Add RAG results if they exist (already summarized if needed)
+    # Add RAG results if they exist and aren't duplicates of what's in history
     if context_documents:
-        final_references.append(context_documents)
-        final_context.append(context_documents)
+        # Check if these documents are already in the conversation history
+        history_text = "\n".join(str(msg) for pair in history for msg in pair)
+        if context_documents not in history_text:
+            final_references.append(context_documents)
+            final_context.append(context_documents)
     
     # If no results at all, add placeholder
-    if not final_references:
+    if not final_references and not final_context:
         no_results = "No search results."
         final_references.append(no_results)
         final_context.append(no_results)
