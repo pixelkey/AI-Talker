@@ -30,6 +30,7 @@ def setup_gradio_interface(context):
     
     # Initialize TTS at startup
     tts_manager = TTSManager(context)
+    context['tts_manager'] = tts_manager  # Add TTS manager to context
     if not context.get('tts'):
         print("Failed to initialize TTS")
         return None
@@ -111,8 +112,14 @@ def setup_gradio_interface(context):
             audio_path = tts_manager.text_to_speech(tts_text)
             print("TTS generation complete")
             
-            # Update embeddings in background and start reflection
+            # Update embeddings in background
             context['embedding_updater'].update_chat_embeddings_async(history, state)
+            
+            # Wait for TTS to fully complete before starting reflection
+            while tts_manager.is_processing:
+                time.sleep(0.1)  # Short sleep to prevent busy waiting
+            
+            # Start reflection after TTS is done
             self_reflection.start_reflection(new_history, lambda x: None)
             
             return (

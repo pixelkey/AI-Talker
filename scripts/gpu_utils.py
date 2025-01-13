@@ -20,7 +20,7 @@ def get_gpu_temperature():
     except (subprocess.SubprocessError, FileNotFoundError, ValueError):
         return None
 
-def is_gpu_too_hot(max_temp=85):  # 75°C is a reasonable threshold
+def is_gpu_too_hot(max_temp=80):  # 75°C is a reasonable threshold
     """Check if the GPU temperature exceeds the threshold."""
     temp = get_gpu_temperature()
     if temp is not None:

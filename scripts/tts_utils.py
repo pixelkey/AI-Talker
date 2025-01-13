@@ -14,6 +14,7 @@ class TTSManager:
         self.tts = None
         self.voice_samples = None
         self.conditioning_latents = None
+        self.is_processing = False  # Track TTS processing status
         self.initialize_tts()
 
     def clear_gpu_memory(self):
@@ -224,14 +225,7 @@ class TTSManager:
         logger = logging.getLogger(__name__)
         logger.info("\n=== Starting text_to_speech ===")
         
-        if not text:
-            logger.warning("No text provided, returning None")
-            return None
-
-        if not all([self.tts, self.voice_samples, self.conditioning_latents]):
-            logger.error("TTS not properly initialized")
-            return None
-        
+        self.is_processing = True  # Set processing flag
         try:
             # Extract style cue if present
             style_cue = ""
@@ -364,3 +358,5 @@ class TTSManager:
             import traceback
             traceback.print_exc()
             return None
+        finally:
+            self.is_processing = False  # Clear processing flag

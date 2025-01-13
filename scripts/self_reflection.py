@@ -27,6 +27,7 @@ class SelfReflection:
         self.history_manager = SelfReflectionHistoryManager()
         self.history_manager.start_new_session()
         self.embedding_updater = context['embedding_updater']
+        self.tts_manager = context.get('tts_manager')  # Get TTS manager from context
         self.reflection_system_prompt = (
             "You are an AI system focused on continuous learning and adaptation through conversation analysis. "
             "Generate concise, actionable insights about your own learning and improvement while following these guidelines:\n\n"
@@ -56,6 +57,16 @@ class SelfReflection:
             logger.info("Already reflecting, skipping new reflection")
             return
             
+        # Wait for TTS to finish if it's processing
+        if self.tts_manager and self.tts_manager.is_processing:
+            logger.info("Waiting for TTS to finish processing before starting reflection...")
+            while self.tts_manager.is_processing:
+                time.sleep(0.5)  # Short sleep to prevent busy waiting
+                if self.stop_reflection.is_set():
+                    logger.info("Stop signal received while waiting for TTS")
+                    return
+            logger.info("TTS processing finished, starting reflection...")
+            
         # Clear previous user input signals
         while not self.user_input_queue.empty():
             self.user_input_queue.get()
@@ -70,7 +81,7 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 reflection_history = []
-                max_reflections = 4 # Limit reflections for efficiency
+                max_reflections = 1 # Limit reflections for efficiency
                 
                 while not self.stop_reflection.is_set() and reflection_count < max_reflections:
                     # Check system resources
