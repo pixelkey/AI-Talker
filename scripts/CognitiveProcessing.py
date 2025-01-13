@@ -996,9 +996,11 @@ SEARCH_TERMS: [If YES or if RAG only has partial info, provide 2-5 key search te
                             # End of search terms section
                             break
                     
-                    if llm_response.get("NEEDS_SEARCH", "NO").upper() == "YES":
-                        result["needs_web_search"] = True
-
+                    if search_terms:
+                        search_query = ' '.join(search_terms)
+                    else:
+                        search_query = query  # Fall back to original query if no terms found
+                    
         # If search is needed, generate optimized search query using LLM
         if result["needs_web_search"]:
             search_query_prompt = f"""Generate a clear and effective search query for this user request.
