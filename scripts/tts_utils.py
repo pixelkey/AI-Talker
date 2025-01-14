@@ -161,8 +161,7 @@ class TTSManager:
         [whispered, mysterious]
         [shouting, angry and energetic]
         
-        Returns:
-            tuple[str, float]: Enhanced prompt and calculated temperature
+        These cues will influence the speech generation but won't be spoken.
         """
         logger = logging.getLogger(__name__)
         
@@ -319,7 +318,7 @@ class TTSManager:
                     print(f"Generated audio for chunk {i}")
                 except RuntimeError as e:
                     print(f"Error generating audio for chunk {i}: {e}")
-                    if "expected a non-empty list of Tensors" in str(e):
+                    if "expected a non-empty list of Tensors" in str(e) or "out of memory" in str(e):
                         print("Retrying with different configuration...")
                         # Try again with modified settings and emotion
                         chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
@@ -328,16 +327,19 @@ class TTSManager:
                         retry_temperature = self.determine_temperature("", is_retry=True)
                         logger.info(f"Retry attempt using temperature: {retry_temperature}")
                         
+                        # Clear memory before retry
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        
                         gen = self.tts.tts_with_preset(
                             chunk_with_emotion,
                             voice_samples=self.voice_samples,
                             conditioning_latents=self.conditioning_latents,
-                            preset='ultra_fast',  # Changed from standard to ultra_fast for retry as well
+                            preset='ultra_fast',
                             use_deterministic_seed=True,
-                            num_autoregressive_samples=1,
-                            diffusion_iterations=20,
-                            cond_free=True,
-                            cond_free_k=4.0,
+                            num_autoregressive_samples=1,  # Reduced from previous setting
+                            diffusion_iterations=15,  # More aggressive reduction
+                            cond_free=False,  # Disable conditional free sampling to save memory
                             temperature=retry_temperature,
                             length_penalty=1.0,
                             repetition_penalty=2.0,
