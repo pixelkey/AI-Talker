@@ -17,7 +17,7 @@ class TTSManager:
         self.is_processing = False  # Track TTS processing status
         self.initialize_tts()
 
-    def clear_gpu_memory(self):
+    def clear_gpu_memory(self, reinitialize=False):
         """Clear GPU memory cache and run garbage collection"""
         if torch.cuda.is_available():
             # Empty CUDA cache
@@ -33,52 +33,66 @@ class TTSManager:
             # Run garbage collection
             gc.collect()
             torch.cuda.empty_cache()
+            
+            # Only reinitialize if explicitly requested
+            if reinitialize:
+                self._initialize_tts_internal()
+                
+    def _initialize_tts_internal(self):
+        """Internal method for TTS initialization without recursive cleanup"""
+        # Set PyTorch memory optimization
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        
+        # Initialize TTS with optimal configuration
+        tts_config = {
+            "kv_cache": True,
+            "half": True,
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "autoregressive_batch_size": 1,
+            "use_deepspeed": True
+        }
+        print(f"Initializing TTS with config: {tts_config}")
+        self.tts = TextToSpeech(**tts_config)
+        print("TTS object created successfully")
 
+        # Set fixed seed for consistent voice
+        torch.manual_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(42)
+
+        # Get voice from config
+        voice_name = os.getenv('TTS_VOICE', 'emma')
+        print(f"Loading voice samples for {voice_name}...")
+        self.voice_samples = load_voice(voice_name, extra_voice_dirs=[])[0]
+        print(f"Voice samples loaded: {len(self.voice_samples)} samples")
+
+        print("Computing conditioning latents...")
+        self.conditioning_latents = self.tts.get_conditioning_latents(self.voice_samples)
+        print("Conditioning latents generated")
+
+        # Store in context
+        self.context.update({
+            'tts': self.tts,
+            'voice_samples': self.voice_samples,
+            'conditioning_latents': self.conditioning_latents
+        })
+            
     def initialize_tts(self):
         """Initialize TTS and return the initialized objects"""
         print("\n=== Initializing TTS at startup ===")
         try:
             # Clear GPU memory before initialization
-            self.clear_gpu_memory()
-
-            # Initialize TTS with optimal configuration
-            tts_config = {
-                "kv_cache": True,
-                "half": True,
-                "device": "cuda" if torch.cuda.is_available() else "cpu",
-                "autoregressive_batch_size": 1,  # larger GPU memory usage if set more than 1
-                "use_deepspeed": True
-            }
-            print(f"Initializing TTS with config: {tts_config}")
-            self.tts = TextToSpeech(**tts_config)
-            print("TTS object created successfully")
-
-            # Set fixed seed for consistent voice
-            torch.manual_seed(42)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(42)
-
-            # Get voice from config
-            voice_name = os.getenv('TTS_VOICE', 'emma')
-            print(f"Loading voice samples for {voice_name}...")
-            self.voice_samples = load_voice(voice_name, extra_voice_dirs=[])[0]
-            print(f"Voice samples loaded: {len(self.voice_samples)} samples")
-
-            print("Computing conditioning latents...")
-            self.conditioning_latents = self.tts.get_conditioning_latents(self.voice_samples)
-            print("Conditioning latents generated")
-
-            # Store in context
-            self.context.update({
-                'tts': self.tts,
-                'voice_samples': self.voice_samples,
-                'conditioning_latents': self.conditioning_latents
-            })
-
+            self.clear_gpu_memory(reinitialize=False)
+            self._initialize_tts_internal()
         except Exception as e:
             print(f"Error initializing TTS: {e}")
             import traceback
             traceback.print_exc()
+
+    def ensure_tts_initialized(self):
+        """Ensure TTS is initialized before use"""
+        if self.tts is None:
+            self.initialize_tts()
 
     def determine_temperature(self, emotion_cue, is_retry=False):
         # Define temperature variations based on emotion with more dramatic ranges
@@ -227,6 +241,12 @@ class TTSManager:
         
         self.is_processing = True  # Set processing flag
         try:
+            # Ensure TTS is initialized
+            self.ensure_tts_initialized()
+            
+            if self.tts is None:
+                raise RuntimeError("Failed to initialize TTS system")
+                
             # Extract style cue if present
             style_cue = ""
             text_to_speak = text

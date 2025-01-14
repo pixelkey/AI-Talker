@@ -81,17 +81,27 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 reflection_history = []
-                max_reflections = 0 # Limit reflections for efficiency
+                max_reflections = 1 # Limit reflections for efficiency
                 
                 while not self.stop_reflection.is_set() and reflection_count < max_reflections:
-                    # Check system resources
+                    # Check system resources and TTS status
                     if is_gpu_too_hot():
                         logger.warning("GPU temperature too high, pausing reflection")
                         break
 
+                    # Wait if TTS is still processing
+                    if self.tts_manager and self.tts_manager.is_processing:
+                        logger.info("TTS still processing, waiting before reflection")
+                        time.sleep(1)  # Wait a second before checking again
+                        continue
+
                     if not self.user_input_queue.empty():
                         logger.info("User input detected, stopping reflection")
                         break
+                    
+                    # Clear GPU memory before reflection
+                    if self.tts_manager:
+                        self.tts_manager.clear_gpu_memory()
                     
                     # Generate focused reflection
                     logger.info("Generating focused reflection")
