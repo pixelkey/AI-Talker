@@ -43,32 +43,68 @@ class TTSManager:
         # Set PyTorch memory optimization
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
         
+        # Check CUDA capabilities
+        use_cuda = torch.cuda.is_available()
+        if use_cuda:
+            device = "cuda"
+            # Check if GPU supports float16
+            gpu_name = torch.cuda.get_device_name()
+            compute_capability = torch.cuda.get_device_capability()
+            supports_float16 = compute_capability[0] >= 7  # Volta or newer architecture
+            logging.info(f"GPU: {gpu_name}, Compute Capability: {compute_capability}")
+            
+            # Check DeepSpeed availability
+            try:
+                import deepspeed
+                logging.info("DeepSpeed is installed")
+                ds_version = deepspeed.__version__
+                logging.info(f"DeepSpeed version: {ds_version}")
+                
+                # Check if CUDA kernels are built
+                if hasattr(deepspeed, 'ops'):
+                    logging.info("DeepSpeed CUDA kernels are available")
+                else:
+                    logging.info("DeepSpeed CUDA kernels are not built")
+                
+                use_deepspeed = True
+            except ImportError:
+                logging.warning("DeepSpeed is not installed")
+                use_deepspeed = False
+            except Exception as e:
+                logging.warning(f"DeepSpeed error: {str(e)}")
+                use_deepspeed = False
+        else:
+            device = "cpu"
+            supports_float16 = False
+            use_deepspeed = False
+            logging.info("Running on CPU")
+        
         # Initialize TTS with optimal configuration
         tts_config = {
             "kv_cache": True,
-            "half": True,
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "half": supports_float16,  # Only use half precision if supported
+            "device": device,
             "autoregressive_batch_size": 1,
-            "use_deepspeed": True
+            "use_deepspeed": use_deepspeed
         }
-        print(f"Initializing TTS with config: {tts_config}")
+        logging.info(f"Initializing TTS with config: {tts_config}")
         self.tts = TextToSpeech(**tts_config)
-        print("TTS object created successfully")
+        logging.info("TTS object created successfully")
 
         # Set fixed seed for consistent voice
         torch.manual_seed(42)
-        if torch.cuda.is_available():
+        if use_cuda:
             torch.cuda.manual_seed(42)
 
         # Get voice from config
         voice_name = os.getenv('TTS_VOICE', 'emma')
-        print(f"Loading voice samples for {voice_name}...")
+        logging.info(f"Loading voice samples for {voice_name}...")
         self.voice_samples = load_voice(voice_name, extra_voice_dirs=[])[0]
-        print(f"Voice samples loaded: {len(self.voice_samples)} samples")
+        logging.info(f"Voice samples loaded: {len(self.voice_samples)} samples")
 
-        print("Computing conditioning latents...")
+        logging.info("Computing conditioning latents...")
         self.conditioning_latents = self.tts.get_conditioning_latents(self.voice_samples)
-        print("Conditioning latents generated")
+        logging.info("Conditioning latents generated")
 
         # Store in context
         self.context.update({
@@ -79,13 +115,13 @@ class TTSManager:
             
     def initialize_tts(self):
         """Initialize TTS and return the initialized objects"""
-        print("\n=== Initializing TTS at startup ===")
+        logging.info("\n=== Initializing TTS at startup ===")
         try:
             # Clear GPU memory before initialization
             self.clear_gpu_memory(reinitialize=False)
             self._initialize_tts_internal()
         except Exception as e:
-            print(f"Error initializing TTS: {e}")
+            logging.info(f"Error initializing TTS: {e}")
             import traceback
             traceback.print_exc()
 
@@ -232,6 +268,7 @@ class TTSManager:
         "[sad, slow and gentle] I miss you"
         "[professional, clear and confident] Let me explain"
         "[whispered, mysterious] I have a secret"
+        "[shouting, angry and energetic] I'm so angry!"
         
         These cues will influence the speech generation but won't be spoken.
         """

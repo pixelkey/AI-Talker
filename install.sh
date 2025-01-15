@@ -213,14 +213,63 @@ fi
 # Upgrade pip and install requirements
 echo -e "${YELLOW}Installing Python dependencies...${NC}"
 python3 -m pip install --upgrade pip wheel setuptools
-python3 -m pip install --no-cache-dir python-dotenv
-python3 -m pip install --no-cache-dir -r requirements.txt
 
-# Verify python-dotenv installation specifically
-if ! python3 -c "from dotenv import load_dotenv" 2>/dev/null; then
-    echo -e "${RED}Failed to import python-dotenv. Attempting direct installation...${NC}"
-    python3 -m pip install --no-cache-dir --force-reinstall python-dotenv
+# Check for GPU and install CUDA/DeepSpeed if available
+if check_gpu; then
+    echo -e "${YELLOW}Setting up CUDA environment...${NC}"
+    
+    # Get CUDA version
+    CUDA_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | cut -d'.' -f1)
+    echo -e "${GREEN}Detected CUDA version: $CUDA_VERSION${NC}"
+
+    # Install PyTorch with CUDA support
+    echo -e "${YELLOW}Installing PyTorch with CUDA support...${NC}"
+    python3 -m pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+    # Set CUDA environment variables
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+else
+    echo -e "${YELLOW}No GPU detected, installing CPU-only PyTorch...${NC}"
+    python3 -m pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 fi
+
+# Install LangChain packages first
+echo -e "${YELLOW}Installing LangChain packages...${NC}"
+python3 -m pip install --no-cache-dir \
+    "langchain>=0.0.352" \
+    "langchain-community>=0.0.10" \
+    "langchain-openai>=0.0.3"
+
+# Install core dependencies
+echo -e "${YELLOW}Installing core dependencies...${NC}"
+python3 -m pip install --no-cache-dir \
+    python-dotenv \
+    openai \
+    gradio \
+    ollama \
+    faiss-cpu \
+    nltk
+
+# Install transformers with compatible tokenizers
+echo -e "${YELLOW}Installing transformers and tokenizers...${NC}"
+python3 -m pip install --no-cache-dir "tokenizers<0.14,>=0.11.1,!=0.11.3"
+python3 -m pip install --no-cache-dir "transformers<4.32.0,>=4.31.0"
+
+# Install TTS-related packages
+echo -e "${YELLOW}Installing TTS packages...${NC}"
+python3 -m pip install --no-cache-dir "tortoise-tts>=2.7.0,<3.1.0"
+
+# Install remaining packages from lock file, ignoring conflicts
+echo -e "${YELLOW}Installing remaining dependencies...${NC}"
+grep -v "^transformers=\|^tokenizers=\|^tortoise-tts=\|^langchain" requirements-lock.txt | \
+while IFS= read -r line || [[ -n "$line" ]]; do
+    # Skip empty lines and comments
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^#.*$ ]] && continue
+    python3 -m pip install --no-cache-dir "$line" || true
+done
 
 # Install NLTK data
 echo -e "${YELLOW}Installing NLTK data...${NC}"
@@ -228,7 +277,7 @@ python3 -c "import nltk; nltk.download('punkt'); nltk.download('averaged_percept
 
 # Verify critical packages are installed
 echo -e "${YELLOW}Verifying installations...${NC}"
-REQUIRED_PACKAGES=("python-dotenv" "langchain" "openai" "gradio" "ollama" "faiss-cpu" "nltk")
+REQUIRED_PACKAGES=("python-dotenv" "langchain" "langchain-community" "langchain-openai" "openai" "gradio" "ollama" "faiss-cpu" "nltk")
 for package in "${REQUIRED_PACKAGES[@]}"; do
     if ! python3 -m pip show "$package" > /dev/null 2>&1; then
         echo -e "${RED}Critical package $package is not installed${NC}"
@@ -236,26 +285,10 @@ for package in "${REQUIRED_PACKAGES[@]}"; do
     fi
 done
 
-# Check for GPU and install CUDA/DeepSpeed if available
-if check_gpu; then
-    echo -e "${YELLOW}Setting up CUDA environment...${NC}"
-    # Check common CUDA paths (including Paperspace default)
-    CUDA_PATHS=("/usr/local/cuda" "/usr/cuda" "/opt/cuda")
-    for path in "${CUDA_PATHS[@]}"; do
-        if [ -d "$path" ]; then
-            export CUDA_HOME=$path
-            export PATH=$CUDA_HOME/bin:$PATH
-            export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
-            echo -e "${GREEN}CUDA found at: $CUDA_HOME${NC}"
-            break
-        fi
-    done
-
-    if [ -n "$CUDA_HOME" ]; then
-        echo -e "${YELLOW}Installing DeepSpeed...${NC}"
-        pip install deepspeed
-    fi
-fi
+# Create required directories
+echo -e "${YELLOW}Creating required directories...${NC}"
+mkdir -p ingest embeddings
+touch ingest/.gitkeep
 
 # Create .env file if it doesn't exist
 if [ ! -f ".env" ]; then

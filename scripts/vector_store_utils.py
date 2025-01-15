@@ -46,15 +46,18 @@ def load_or_initialize_vector_store(
     documents = load_documents_from_folder(ingest_path, CHUNK_SIZE_MAX)
 
     if not documents:
-        # Initialize an empty vector store if no documents exist
+        # Initialize an empty vector store with a small set of dummy documents
+        logging.info("No documents found. Initializing empty vector store with dummy data.")
         quantizer = faiss.IndexFlatIP(EMBEDDING_DIM)
         index = faiss.IndexIVFFlat(
-            quantizer, EMBEDDING_DIM, 10, faiss.METRIC_INNER_PRODUCT  # Start with minimum 10 clusters
+            quantizer, EMBEDDING_DIM, 1, faiss.METRIC_INNER_PRODUCT  # Use minimum clusters
         )
-        # Train with a single zero vector since FAISS requires training
-        zero_vector = np.zeros((1, EMBEDDING_DIM), dtype="float32")
-        index.train(zero_vector)
-        index.nprobe = 10
+        
+        # Create and train with dummy vectors
+        dummy_vectors = np.random.rand(10, EMBEDDING_DIM).astype('float32')
+        dummy_vectors /= np.linalg.norm(dummy_vectors, axis=1)[:, np.newaxis]  # Normalize vectors
+        index.train(dummy_vectors)
+        index.nprobe = 1
 
         docstore = InMemoryDocstore({})
         index_to_docstore_id = {}
