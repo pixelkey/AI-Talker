@@ -12,7 +12,7 @@ SpeechRecognition==3.10.1
 soundfile==0.12.1
 gTTS==2.4.0
 watchdog==3.0.0
-tortoise-tts=3.0.0
-duckduckgo-search=7.2.0
-beautifulsoup4=4.12.3
+tortoise-tts==3.0.0
+duckduckgo-search==7.2.0
+beautifulsoup4==4.12.3
 requests
