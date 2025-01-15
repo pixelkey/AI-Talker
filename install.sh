@@ -212,25 +212,23 @@ fi
 
 # Upgrade pip and install requirements
 echo -e "${YELLOW}Installing Python dependencies...${NC}"
-python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade pip wheel setuptools
+python3 -m pip install --no-cache-dir python-dotenv
+python3 -m pip install --no-cache-dir -r requirements.txt
 
-# Install each requirement separately to better handle errors
-echo -e "${YELLOW}Installing individual packages...${NC}"
-while IFS= read -r line || [[ -n "$line" ]]; do
-    # Skip empty lines and comments
-    [[ -z "$line" ]] && continue
-    [[ "$line" =~ ^#.*$ ]] && continue
-    
-    echo -e "${YELLOW}Installing $line...${NC}"
-    if ! python3 -m pip install "$line"; then
-        echo -e "${RED}Failed to install $line${NC}"
-        exit 1
-    fi
-done < requirements.txt
+# Verify python-dotenv installation specifically
+if ! python3 -c "from dotenv import load_dotenv" 2>/dev/null; then
+    echo -e "${RED}Failed to import python-dotenv. Attempting direct installation...${NC}"
+    python3 -m pip install --no-cache-dir --force-reinstall python-dotenv
+fi
+
+# Install NLTK data
+echo -e "${YELLOW}Installing NLTK data...${NC}"
+python3 -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger'); nltk.download('wordnet')"
 
 # Verify critical packages are installed
 echo -e "${YELLOW}Verifying installations...${NC}"
-REQUIRED_PACKAGES=("python-dotenv" "langchain" "openai" "gradio" "ollama")
+REQUIRED_PACKAGES=("python-dotenv" "langchain" "openai" "gradio" "ollama" "faiss-cpu" "nltk")
 for package in "${REQUIRED_PACKAGES[@]}"; do
     if ! python3 -m pip show "$package" > /dev/null 2>&1; then
         echo -e "${RED}Critical package $package is not installed${NC}"
