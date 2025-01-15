@@ -18,32 +18,59 @@ update_repository() {
         return 1
     fi
 
-    # Stash any local changes
-    echo -e "${YELLOW}Stashing local changes if any...${NC}"
+    # Check for untracked files first
+    UNTRACKED_FILES=$(git ls-files --others --exclude-standard)
+    if [ ! -z "$UNTRACKED_FILES" ]; then
+        echo -e "${YELLOW}Untracked files detected that might be overwritten:${NC}"
+        echo "$UNTRACKED_FILES"
+        echo -e "${YELLOW}Would you like to remove these files and continue? (y/N)${NC}"
+        read -r response
+        if [[ "$response" =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}Removing untracked files...${NC}"
+            git clean -f
+        else
+            echo -e "${YELLOW}Update aborted by user${NC}"
+            return 1
+        fi
+    fi
+
+    # Stash any tracked changes
+    echo -e "${YELLOW}Stashing any tracked changes...${NC}"
     git stash
 
     # Get the current branch
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
     
-    # Fetch all changes
+    # Fetch and merge
     echo -e "${YELLOW}Fetching updates...${NC}"
-    if ! git fetch origin; then
-        echo -e "${RED}Failed to fetch updates${NC}"
-        git stash pop
-        return 1
-    fi
-
-    # Update the current branch
-    echo -e "${YELLOW}Updating branch: $CURRENT_BRANCH${NC}"
-    if git pull origin $CURRENT_BRANCH; then
+    if git fetch origin && git reset --hard origin/$CURRENT_BRANCH; then
         echo -e "${GREEN}Repository updated successfully${NC}"
-        
         # Apply stashed changes if any
-        git stash pop > /dev/null 2>&1
+        git stash pop > /dev/null 2>&1 || true
     else
         echo -e "${RED}Failed to update repository${NC}"
         # Apply stashed changes if any
-        git stash pop > /dev/null 2>&1
+        git stash pop > /dev/null 2>&1 || true
+        return 1
+    fi
+}
+
+# Check Python version without using bc
+check_python_version() {
+    if command -v python3 &> /dev/null; then
+        PYTHON_VERSION=$(python3 -c 'import sys; ver=sys.version_info; print(f"{ver.major}.{ver.minor}")')
+        MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+        MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+        
+        if [ "$MAJOR" -gt 3 ] || ([ "$MAJOR" -eq 3 ] && [ "$MINOR" -ge 11 ]); then
+            echo -e "${GREEN}Python $PYTHON_VERSION is already installed${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}Python $PYTHON_VERSION found, but 3.11 or higher is required${NC}"
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}Python 3 not found${NC}"
         return 1
     fi
 }
@@ -72,50 +99,12 @@ fi
 
 # Check Python version
 echo -e "${YELLOW}Checking Python version...${NC}"
-if command -v python3 &> /dev/null; then
-    PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-    if (( $(echo "$PYTHON_VERSION >= 3.11" | bc -l) )); then
-        echo -e "${GREEN}Python $PYTHON_VERSION is already installed${NC}"
-    else
-        echo -e "${YELLOW}Python $PYTHON_VERSION found, but 3.11 or higher is required${NC}"
-        
-        # Try installing from default repositories first
-        if apt-cache show python3.11 &> /dev/null; then
-            echo -e "${GREEN}Python 3.11 found in default repositories${NC}"
-            apt-get install -y python3.11 python3.11-venv python3.11-dev
-        # Try backports if available
-        elif grep -r "backports" /etc/apt/sources.list* &> /dev/null; then
-            echo -e "${GREEN}Trying to install from backports...${NC}"
-            apt-get -t $(lsb_release -cs)-backports install -y python3.11 python3.11-venv python3.11-dev
-        # If not available in official repos, use deadsnakes as fallback
-        else
-            echo -e "${YELLOW}Python 3.11 not found in official repositories${NC}"
-            echo -e "${YELLOW}Adding deadsnakes PPA (trusted Python repository maintained since 2009)${NC}"
-            apt-get install -y software-properties-common
-            add-apt-repository -y ppa:deadsnakes/ppa
-            apt-get update
-            apt-get install -y python3.11 python3.11-venv python3.11-dev
-        fi
-        update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
-        update-alternatives --set python3 /usr/bin/python3.11
-    fi
-else
-    echo -e "${YELLOW}Python 3 not found, checking repositories...${NC}"
-    # Same logic as above for new installation
-    if apt-cache show python3.11 &> /dev/null; then
-        echo -e "${GREEN}Python 3.11 found in default repositories${NC}"
-        apt-get install -y python3.11 python3.11-venv python3.11-dev
-    elif grep -r "backports" /etc/apt/sources.list* &> /dev/null; then
-        echo -e "${GREEN}Trying to install from backports...${NC}"
-        apt-get -t $(lsb_release -cs)-backports install -y python3.11 python3.11-venv python3.11-dev
-    else
-        echo -e "${YELLOW}Python 3.11 not found in official repositories${NC}"
-        echo -e "${YELLOW}Adding deadsnakes PPA (trusted Python repository maintained since 2009)${NC}"
-        apt-get install -y software-properties-common
-        add-apt-repository -y ppa:deadsnakes/ppa
-        apt-get update
-        apt-get install -y python3.11 python3.11-venv python3.11-dev
-    fi
+if ! check_python_version; then
+    # Add deadsnakes PPA for Python 3.11
+    apt-get install -y software-properties-common
+    add-apt-repository -y ppa:deadsnakes/ppa
+    apt-get update
+    apt-get install -y python3.11 python3.11-venv python3.11-dev
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
     update-alternatives --set python3 /usr/bin/python3.11
 fi
@@ -197,18 +186,57 @@ if ! ollama pull nomic-embed-text:latest; then
 fi
 
 # Setup Python virtual environment
+echo -e "${YELLOW}Checking Python virtual environment...${NC}"
 if [ ! -d "venv" ]; then
-    echo -e "${YELLOW}Creating virtual environment...${NC}"
+    echo -e "${YELLOW}Creating new virtual environment...${NC}"
     python3 -m venv venv
+elif [ "$1" == "--fresh" ]; then
+    echo -e "${YELLOW}--fresh flag detected. Removing existing virtual environment...${NC}"
+    rm -rf venv
+    echo -e "${YELLOW}Creating new virtual environment...${NC}"
+    python3 -m venv venv
+else
+    echo -e "${GREEN}Using existing virtual environment${NC}"
+    echo -e "${YELLOW}(Use --fresh flag to create a new environment if needed)${NC}"
 fi
 
 # Activate virtual environment
+echo -e "${YELLOW}Activating virtual environment...${NC}"
 source venv/bin/activate
+
+# Verify virtual environment is active
+if [[ "$VIRTUAL_ENV" != *"venv"* ]]; then
+    echo -e "${RED}Failed to activate virtual environment${NC}"
+    exit 1
+fi
 
 # Upgrade pip and install requirements
 echo -e "${YELLOW}Installing Python dependencies...${NC}"
-pip install --upgrade pip
-pip install -r requirements.txt
+python3 -m pip install --upgrade pip
+
+# Install each requirement separately to better handle errors
+echo -e "${YELLOW}Installing individual packages...${NC}"
+while IFS= read -r line || [[ -n "$line" ]]; do
+    # Skip empty lines and comments
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^#.*$ ]] && continue
+    
+    echo -e "${YELLOW}Installing $line...${NC}"
+    if ! python3 -m pip install "$line"; then
+        echo -e "${RED}Failed to install $line${NC}"
+        exit 1
+    fi
+done < requirements.txt
+
+# Verify critical packages are installed
+echo -e "${YELLOW}Verifying installations...${NC}"
+REQUIRED_PACKAGES=("python-dotenv" "langchain" "openai" "gradio" "ollama")
+for package in "${REQUIRED_PACKAGES[@]}"; do
+    if ! python3 -m pip show "$package" > /dev/null 2>&1; then
+        echo -e "${RED}Critical package $package is not installed${NC}"
+        exit 1
+    fi
+done
 
 # Check for GPU and install CUDA/DeepSpeed if available
 if check_gpu; then
