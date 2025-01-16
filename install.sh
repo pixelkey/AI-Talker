@@ -229,8 +229,27 @@ if check_gpu; then
 fi
 
 # Install all dependencies from requirements.txt
-echo -e "${YELLOW}Installing dependencies from requirements.txt...${NC}"
-python3 -m pip install --no-cache-dir -r requirements.txt
+echo -e "${YELLOW}Installing dependencies individually from requirements.txt...${NC}"
+
+# Read requirements.txt line by line and install each package
+while IFS= read -r line || [ -n "$line" ]; do
+    # Skip empty lines and comments
+    if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*# ]]; then
+        continue
+    fi
+    
+    # Remove leading/trailing whitespace
+    line=$(echo "$line" | xargs)
+    
+    echo -e "${YELLOW}Installing $line...${NC}"
+    if ! python3 -m pip install --no-cache-dir "$line"; then
+        echo -e "${RED}Failed to install $line${NC}"
+        echo -e "${YELLOW}Retrying with --no-deps flag...${NC}"
+        if ! python3 -m pip install --no-cache-dir --no-deps "$line"; then
+            echo -e "${RED}Failed to install $line even with --no-deps. Continuing with next package...${NC}"
+        fi
+    fi
+done < requirements.txt
 
 # Install NLTK data
 echo -e "${YELLOW}Installing NLTK data...${NC}"
