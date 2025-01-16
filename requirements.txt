@@ -24,3 +24,4 @@ gTTS==2.4.0
 # Utilities (version flexible)
 watchdog
 duckduckgo-search
+beautifulsoup4
