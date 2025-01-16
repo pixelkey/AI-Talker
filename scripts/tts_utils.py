@@ -15,6 +15,7 @@ class TTSManager:
         self.voice_samples = None
         self.conditioning_latents = None
         self.is_processing = False  # Track TTS processing status
+        self.gen_config = None
         self.initialize_tts()
 
     def clear_gpu_memory(self, reinitialize=False):
@@ -41,21 +42,67 @@ class TTSManager:
                 if reinitialize:
                     self._initialize_tts_internal()
                     
-    def _initialize_tts_internal(self):
-        """Internal method for TTS initialization without recursive cleanup"""
-        # Set PyTorch memory optimization
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-        
-        # Initialize TTS with optimal configuration
-        tts_config = {
+    def get_gpu_memory(self):
+        """Get the total GPU memory in GB"""
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
+        return 0
+
+    def get_optimal_tts_config(self):
+        """Get optimal TTS configuration based on GPU memory"""
+        gpu_memory = self.get_gpu_memory()
+        print(f"Detected GPU memory: {gpu_memory:.2f} GB")
+
+        # Base configuration for TTS initialization
+        init_config = {
             "kv_cache": True,
             "half": True,
             "device": "cuda" if torch.cuda.is_available() else "cpu",
             "autoregressive_batch_size": 1,
             "use_deepspeed": True
         }
-        print(f"Initializing TTS with config: {tts_config}")
-        self.tts = TextToSpeech(**tts_config)
+
+        # Generation configuration that will be used in tts_with_preset
+        gen_config = {}
+
+        # Optimize settings for different GPU memory sizes
+        if gpu_memory >= 24:  # For high-end GPUs (24GB+)
+            init_config["autoregressive_batch_size"] = 8
+            gen_config.update({
+                "diffusion_iterations": 60,
+                "num_autoregressive_samples": 6
+            })
+        elif gpu_memory >= 16:  # For GPUs with 16-24GB
+            init_config["autoregressive_batch_size"] = 6
+            gen_config.update({
+                "diffusion_iterations": 50,
+                "num_autoregressive_samples": 4
+            })
+        elif gpu_memory >= 12:  # For GPUs with 12-16GB
+            init_config["autoregressive_batch_size"] = 4
+            gen_config.update({
+                "diffusion_iterations": 40,
+                "num_autoregressive_samples": 3
+            })
+        else:  # For GPUs with less than 12GB
+            init_config["autoregressive_batch_size"] = 1
+            gen_config.update({
+                "diffusion_iterations": 30,
+                "num_autoregressive_samples": 1
+            })
+
+        return init_config, gen_config
+
+    def _initialize_tts_internal(self):
+        """Internal method for TTS initialization without recursive cleanup"""
+        # Set PyTorch memory optimization
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        
+        # Get optimal configuration based on GPU memory
+        init_config, self.gen_config = self.get_optimal_tts_config()
+        print(f"Initializing TTS with config: {init_config}")
+        print(f"Will use generation config: {self.gen_config}")
+        self.tts = TextToSpeech(**init_config)
         print("TTS object created successfully")
 
         # Set fixed seed for consistent voice
@@ -301,20 +348,20 @@ class TTSManager:
                     chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
                     logger.info(f"Processing chunk with emotion prompt: '{chunk_with_emotion}'")
                     
-                    # Get temperature based on emotion
-                    logger.info(f"Using temperature {temperature} for emotional expression")
+                    # Get optimal settings based on GPU memory
+                    _, gpu_config = self.get_optimal_tts_config()
                     
                     gen = self.tts.tts_with_preset(
                         chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='ultra_fast',  # Changed from standard to ultra_fast for memory efficiency
+                        preset='ultra_fast',
                         use_deterministic_seed=True,
-                        num_autoregressive_samples=2,  # Keep at 1 for memory efficiency
-                        diffusion_iterations=30,
+                        num_autoregressive_samples=gpu_config.get('num_autoregressive_samples', 2),
+                        diffusion_iterations=gpu_config.get('diffusion_iterations', 30),
                         cond_free=True,
                         cond_free_k=5.0,
-                        temperature=temperature,  # Use emotion-based temperature
+                        temperature=temperature,
                         length_penalty=1.0,
                         repetition_penalty=2.0,
                         top_p=0.8
@@ -331,9 +378,10 @@ class TTSManager:
                         retry_temperature = self.determine_temperature("", is_retry=True)
                         logger.info(f"Retry attempt using temperature: {retry_temperature}")
                         
-                        # Clear memory before retry
-                        torch.cuda.empty_cache()
-                        gc.collect()
+                        # Get optimal settings for retry with slightly reduced values
+                        _, gpu_config = self.get_optimal_tts_config()
+                        retry_samples = max(1, gpu_config.get('num_autoregressive_samples', 1) - 1)
+                        retry_iterations = max(20, gpu_config.get('diffusion_iterations', 30) - 10)
                         
                         gen = self.tts.tts_with_preset(
                             chunk_with_emotion,
@@ -341,9 +389,9 @@ class TTSManager:
                             conditioning_latents=self.conditioning_latents,
                             preset='ultra_fast',
                             use_deterministic_seed=True,
-                            num_autoregressive_samples=1,  # Reduced from previous setting
-                            diffusion_iterations=20,  # More aggressive reduction
-                            cond_free=False,  # Disable conditional free sampling to save memory
+                            num_autoregressive_samples=retry_samples,
+                            diffusion_iterations=retry_iterations,
+                            cond_free=False,
                             temperature=retry_temperature,
                             length_penalty=1.0,
                             repetition_penalty=2.0,
