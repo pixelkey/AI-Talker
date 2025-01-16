@@ -48,10 +48,29 @@ class TTSManager:
             return torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
         return 0
 
+    def can_use_deepspeed(self):
+        """Check if DeepSpeed can be used on this system"""
+        try:
+            # Check GPU memory - only requirement is > 4GB
+            gpu_memory = self.get_gpu_memory()
+            print(f"GPU Memory: {gpu_memory:.1f}GB")
+            if gpu_memory < 4:
+                print(f"GPU memory ({gpu_memory:.1f}GB) is below minimum 4GB requirement")
+                return False
+            print("GPU memory meets minimum requirement")
+            return True
+        except Exception as e:
+            print(f"Error checking GPU memory: {e}")
+            return False
+
     def get_optimal_tts_config(self):
         """Get optimal TTS configuration based on GPU memory"""
         gpu_memory = self.get_gpu_memory()
-        print(f"Detected GPU memory: {gpu_memory:.2f} GB")
+        print(f"\nDetected GPU memory: {gpu_memory:.2f} GB")
+
+        # Check DeepSpeed compatibility
+        can_use_deepspeed = self.can_use_deepspeed()
+        print(f"DeepSpeed status: {'Enabled' if can_use_deepspeed else 'Disabled'}")
 
         # Base configuration for TTS initialization
         init_config = {
@@ -59,7 +78,7 @@ class TTSManager:
             "half": False,  # Default to full precision
             "device": "cuda" if torch.cuda.is_available() else "cpu",
             "autoregressive_batch_size": 1,
-            "use_deepspeed": False  # Default to not using DeepSpeed
+            "use_deepspeed": can_use_deepspeed
         }
 
         # Generation configuration that will be used in tts_with_preset
