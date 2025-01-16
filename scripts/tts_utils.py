@@ -23,21 +23,24 @@ class TTSManager:
             # Empty CUDA cache
             torch.cuda.empty_cache()
             torch.cuda.memory.empty_cache()
-            # Clear any existing models from memory
-            if hasattr(self, 'tts') and self.tts is not None:
-                del self.tts
-            if hasattr(self, 'conditioning_latents') and self.conditioning_latents is not None:
-                del self.conditioning_latents
-            self.tts = None
-            self.conditioning_latents = None
-            # Run garbage collection
-            gc.collect()
-            torch.cuda.empty_cache()
             
-            # Only reinitialize if explicitly requested
+            # Only clear models if explicitly requested
             if reinitialize:
-                self._initialize_tts_internal()
+                # Clear any existing models from memory
+                if hasattr(self, 'tts') and self.tts is not None:
+                    del self.tts
+                if hasattr(self, 'conditioning_latents') and self.conditioning_latents is not None:
+                    del self.conditioning_latents
+                self.tts = None
+                self.conditioning_latents = None
+                # Run garbage collection
+                gc.collect()
+                torch.cuda.empty_cache()
                 
+                # Only reinitialize if explicitly requested
+                if reinitialize:
+                    self._initialize_tts_internal()
+                    
     def _initialize_tts_internal(self):
         """Internal method for TTS initialization without recursive cleanup"""
         # Set PyTorch memory optimization
@@ -240,8 +243,9 @@ class TTSManager:
         
         self.is_processing = True  # Set processing flag
         try:
-            # Ensure TTS is initialized
-            self.ensure_tts_initialized()
+            # Only ensure TTS is initialized at startup, not every call
+            if self.tts is None:
+                self.ensure_tts_initialized()
             
             if self.tts is None:
                 raise RuntimeError("Failed to initialize TTS system")
