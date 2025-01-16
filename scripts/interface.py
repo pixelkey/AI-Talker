@@ -17,6 +17,15 @@ from speech_recognition_utils import SpeechRecognizer
 from self_reflection import SelfReflection
 from queue import Queue
 from datetime import datetime
+from dataclasses import dataclass, field
+import numpy as np
+
+@dataclass
+class AppState:
+    stream: np.ndarray | None = None
+    sampling_rate: int = 0
+    pause_detected: bool = False
+    conversation: list = field(default_factory=list)
 
 def setup_gradio_interface(context):
     """
@@ -71,7 +80,90 @@ def setup_gradio_interface(context):
     def parse_timestamp(timestamp):
         return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
 
-    def handle_user_input(input_text, history):
+    def process_audio(audio, state):
+        """Process incoming audio stream"""
+        try:
+            if audio is None:
+                print("No audio data received")
+                return None, state
+            
+            # audio is a tuple of (sample_rate, audio_data)
+            print(f"Received audio chunk: sample_rate={audio[0]}, shape={audio[1].shape if audio[1] is not None else None}")
+            
+            if state.stream is None:
+                state.stream = audio[1]
+                state.sampling_rate = audio[0]
+                print(f"Started new audio stream with sampling rate {state.sampling_rate}")
+            else:
+                state.stream = np.concatenate((state.stream, audio[1]))
+                print(f"Updated stream length: {len(state.stream)}")
+            
+            return None, state
+        except Exception as e:
+            print(f"Error in process_audio: {str(e)}")
+            return None, state
+
+    def handle_stop(audio_data, state):
+        """Handle when recording is stopped"""
+        try:
+            print(f"Stop handler called with audio_data={type(audio_data) if audio_data is not None else None}")
+            print(f"State stream: shape={state.stream.shape if state.stream is not None else None}, rate={state.sampling_rate}")
+            
+            if state.stream is None:
+                print("No audio data in state")
+                return "", None
+            
+            print("Recording stopped, processing audio...")
+            # Convert audio data to the format expected by the speech recognizer
+            try:
+                # Ensure audio data is float32 and between -1 and 1
+                audio_float32 = state.stream.astype(np.float32)
+                if audio_float32.max() > 1.0 or audio_float32.min() < -1.0:
+                    audio_float32 = np.clip(audio_float32 / 32768.0, -1.0, 1.0)
+                
+                print(f"Audio stats - min: {audio_float32.min()}, max: {audio_float32.max()}, mean: {audio_float32.mean()}")
+                result = speech_recognizer.transcribe_audio((state.sampling_rate, audio_float32))
+                text = result[0] if result[0] else ""
+                print(f"Transcribed text: {text}")
+            except Exception as e:
+                print(f"Error in transcription: {str(e)}")
+                text = ""
+            
+            # Reset the stream
+            state.stream = None
+            state.sampling_rate = 0
+            
+            return text, gr.update(value=text, interactive=True)
+        except Exception as e:
+            print(f"Error in handle_stop: {str(e)}")
+            return "", None
+
+    def handle_transcription(state):
+        """Handle the transcribed text"""
+        try:
+            if hasattr(state, 'value') and state.value:
+                text = state.value
+                print(f"Processing transcribed text: {text}")
+                return text, gr.update(value=text, interactive=True)
+            return "", None
+        except Exception as e:
+            print(f"Error in handle_transcription: {str(e)}")
+            return "", None
+
+    def handle_audio_input(audio_data, state):
+        """Process completed audio recording"""
+        try:
+            if audio_data is None:
+                return "", None, state
+            
+            result = speech_recognizer.transcribe_audio(audio_data)
+            text = result[0] if result[0] else ""
+            return text, gr.update(value=text), state
+        except Exception as e:
+            print(f"Error in handle_audio_input: {str(e)}")
+            return "", None, state
+
+    def handle_user_input(input_text, history, state):
         """Handle user input and generate response with proper state management."""
         try:
             # Notify self-reflection about user input
@@ -96,11 +188,11 @@ def setup_gradio_interface(context):
             # Format messages with timestamp
             dt = parse_timestamp(context['current_time'])
             formatted_time = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
-            user_msg = f"[{formatted_time}]\nUser: {input_text}"
-            bot_msg = f"[{formatted_time}]\nBot: {response}"
+            user_msg = {"role": "user", "content": f"[{formatted_time}]\nUser: {input_text}"}
+            bot_msg = {"role": "assistant", "content": f"[{formatted_time}]\nBot: {response}"}
             
             # Update history with the new user and bot messages
-            new_history = history + [(user_msg, bot_msg)]
+            new_history = history + [user_msg, bot_msg]
             chat_manager.save_history(new_history)
             
             # Generate speech for the response
@@ -144,21 +236,24 @@ def setup_gradio_interface(context):
         cleared_history, cleared_refs, cleared_input = clear_history(context, history)
         return [], cleared_refs, cleared_input, [], None
 
-    # Create Gradio interface
     with gr.Blocks() as interface:
-        # Create interface components
         with gr.Row():
+            with gr.Column(scale=1):
+                references = gr.Markdown("References:")
+            
             with gr.Column(scale=4):
                 chatbot = gr.Chatbot(
                     [],
                     elem_id="chatbot",
                     show_label=False,
-                    layout="bubble"
+                    layout="bubble",
+                    type="messages"  # Specify the type as messages to use OpenAI-style format
                 )
                 audio_output = gr.Audio(
                     label="Response",
                     show_label=True,
-                    autoplay=True
+                    autoplay=True,
+                    elem_id="audio-output"
                 )
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=6):
@@ -173,118 +268,81 @@ def setup_gradio_interface(context):
                         with gr.Group():
                             audio_input = gr.Audio(
                                 sources=["microphone"],
-                                type="filepath",
+                                type="numpy",
+                                streaming=True,
                                 label="Speak",
-                                show_label=True,
-                                scale=1
+                                show_label=True
                             )
-                with gr.Row():
-                    # Create a container div for consistent button heights
-                    gr.HTML("""
-                        <style>
-                        #submit-btn, #clear-btn {
-                            height: 40px !important;
-                            min-height: 40px !important;
-                            max-height: 40px !important;
-                            margin: 0 !important;
-                            padding: 0 16px !important;
-                            display: inline-flex !important;
-                            align-items: center !important;
-                            justify-content: center !important;
-                            text-align: center !important;
-                            line-height: 1 !important;
-                        }
-                        #submit-btn span, #clear-btn span {
-                            display: inline-block !important;
-                            visibility: visible !important;
-                            opacity: 1 !important;
-                        }
-                        </style>
-                    """)
-                    with gr.Column(scale=3):
-                        submit_text = gr.Button(
-                            "Submit",
-                            variant="primary",
-                            elem_id="submit-btn"
-                        )
-                    with gr.Column(scale=1):
-                        clear_btn = gr.Button(
-                            "Clear",
-                            variant="secondary",
-                            elem_id="clear-btn"
-                        )
-            with gr.Column(scale=2):
-                references = gr.Textbox(
-                    show_label=False,
-                    placeholder="References will appear here...",
-                    lines=25
-                )
-                
-        # Set up event handlers
-        submit_text.click(
-            handle_user_input,
-            inputs=[input_text, chatbot],
-            outputs=[
-                chatbot,
-                references,
-                input_text,
-                gr.State(value=[]),
-                audio_output
-            ],
-            queue=True
-        ).success(
-            lambda: gr.update(interactive=True),
-            None,
-            [submit_text],
-            queue=False
-        )
-        
-        input_text.submit(
-            handle_user_input,
-            inputs=[input_text, chatbot],
-            outputs=[
-                chatbot,
-                references,
-                input_text,
-                gr.State(value=[]),
-                audio_output
-            ],
-            queue=True
-        )
-        
-        # Audio input with auto-submit
-        audio_input.change(
-            speech_recognizer.transcribe_audio,
-            inputs=[audio_input],
-            outputs=[
-                input_text,
-                submit_text
-            ],
-            queue=False
-        ).success(
-            handle_user_input,
-            inputs=[input_text, chatbot],
-            outputs=[
-                chatbot,
-                references,
-                input_text,
-                gr.State(value=[]),
-                audio_output
-            ],
-            queue=True
-        )
-        
-        clear_btn.click(
-            clear_interface,
-            inputs=[chatbot],
-            outputs=[
-                chatbot,
-                references,
-                input_text,
-                gr.State(value=[]),
-                audio_output
-            ],
-            queue=False
-        )
 
-    return interface
+                with gr.Row():
+                    submit_text = gr.Button("Send", elem_id="submit-btn")
+                    clear_btn = gr.Button("Clear", elem_id="clear-btn")
+
+                state = gr.State(value=AppState())
+
+                # Set up audio streaming and stopping
+                audio_stream = audio_input.stream(
+                    process_audio,
+                    [audio_input, state],
+                    [audio_input, state],
+                    stream_every=0.5,
+                    time_limit=30
+                )
+
+                # Handle stop recording
+                audio_input.stop_recording(
+                    handle_stop,
+                    [audio_input, state],
+                    [input_text, submit_text]
+                ).success(
+                    handle_user_input,
+                    inputs=[input_text, chatbot, state],
+                    outputs=[
+                        chatbot,
+                        references,
+                        input_text,
+                        gr.State(value=[]),
+                        audio_output
+                    ],
+                    queue=True
+                )
+
+                # Start recording again after audio output finishes
+                def restart_recording(state):
+                    """Restart recording after audio output finishes"""
+                    state.stream = None
+                    state.sampling_rate = 0
+                    # Return both audio input update and start recording
+                    return gr.update(value=None, interactive=True, recording=True)
+
+                audio_output.stop(
+                    restart_recording,
+                    [state],
+                    [audio_input]
+                )
+
+                # Text input handlers
+                submit_text.click(
+                    handle_user_input,
+                    inputs=[input_text, chatbot, state],
+                    outputs=[
+                        chatbot,
+                        references,
+                        input_text,
+                        gr.State(value=[]),
+                        audio_output
+                    ],
+                    queue=True
+                )
+
+                clear_btn.click(
+                    clear_interface,
+                    inputs=[chatbot],
+                    outputs=[chatbot, references, input_text]
+                )
+
+        return interface
+
+def clear_interface(chat_history):
+    """Clears the interface"""
+    return [], "", ""
