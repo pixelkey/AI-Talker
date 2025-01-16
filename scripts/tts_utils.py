@@ -16,6 +16,9 @@ class TTSManager:
         self.conditioning_latents = None
         self.is_processing = False  # Track TTS processing status
         self.gen_config = None
+        self._gpu_memory = self.get_gpu_memory()
+        self._use_deepspeed = self._gpu_memory >= 4
+        print(f"Initialized TTS Manager - GPU Memory: {self._gpu_memory:.1f}GB, DeepSpeed: {'Enabled' if self._use_deepspeed else 'Disabled'}")
         self.initialize_tts()
 
     def clear_gpu_memory(self, reinitialize=False):
@@ -50,22 +53,11 @@ class TTSManager:
 
     def can_use_deepspeed(self):
         """Check if DeepSpeed can be used on this system"""
-        try:
-            # Check GPU memory - only requirement is > 4GB
-            gpu_memory = self.get_gpu_memory()
-            print(f"GPU Memory: {gpu_memory:.1f}GB")
-            if gpu_memory < 4:
-                print(f"GPU memory ({gpu_memory:.1f}GB) is below minimum 4GB requirement")
-                return False
-            print("GPU memory meets minimum requirement")
-            return True
-        except Exception as e:
-            print(f"Error checking GPU memory: {e}")
-            return False
+        return self._use_deepspeed
 
     def get_optimal_tts_config(self):
         """Get optimal TTS configuration based on GPU memory"""
-        gpu_memory = self.get_gpu_memory()
+        gpu_memory = self._gpu_memory
         print(f"\nDetected GPU memory: {gpu_memory:.2f} GB")
 
         # Check DeepSpeed compatibility
