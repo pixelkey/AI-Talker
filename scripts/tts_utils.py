@@ -56,33 +56,34 @@ class TTSManager:
         # Base configuration for TTS initialization
         init_config = {
             "kv_cache": True,
-            "half": True,
+            "half": False,  # Default to full precision
             "device": "cuda" if torch.cuda.is_available() else "cpu",
             "autoregressive_batch_size": 1,
-            "use_deepspeed": True
+            "use_deepspeed": False  # Default to not using DeepSpeed
         }
 
         # Generation configuration that will be used in tts_with_preset
         gen_config = {}
 
         # Optimize settings for different GPU memory sizes
+        # Using more conservative batch sizes due to full precision
         if gpu_memory >= 24:  # For high-end GPUs (24GB+)
-            init_config["autoregressive_batch_size"] = 8
-            gen_config.update({
-                "diffusion_iterations": 60,
-                "num_autoregressive_samples": 6
-            })
-        elif gpu_memory >= 16:  # For GPUs with 16-24GB
-            init_config["autoregressive_batch_size"] = 6
-            gen_config.update({
-                "diffusion_iterations": 50,
-                "num_autoregressive_samples": 4
-            })
-        elif gpu_memory >= 12:  # For GPUs with 12-16GB
             init_config["autoregressive_batch_size"] = 4
             gen_config.update({
-                "diffusion_iterations": 40,
+                "diffusion_iterations": 60,
                 "num_autoregressive_samples": 3
+            })
+        elif gpu_memory >= 16:  # For GPUs with 16-24GB
+            init_config["autoregressive_batch_size"] = 3
+            gen_config.update({
+                "diffusion_iterations": 50,
+                "num_autoregressive_samples": 2
+            })
+        elif gpu_memory >= 12:  # For GPUs with 12-16GB
+            init_config["autoregressive_batch_size"] = 3
+            gen_config.update({
+                "diffusion_iterations": 40,
+                "num_autoregressive_samples": 4
             })
         else:  # For GPUs with less than 12GB
             init_config["autoregressive_batch_size"] = 1
@@ -355,16 +356,17 @@ class TTSManager:
                         chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='ultra_fast',
+                        preset='fast',  # Use 'fast' as base preset
                         use_deterministic_seed=True,
                         num_autoregressive_samples=gpu_config.get('num_autoregressive_samples', 2),
-                        diffusion_iterations=gpu_config.get('diffusion_iterations', 30),
+                        diffusion_iterations=gpu_config.get('diffusion_iterations', 40),
                         cond_free=True,
-                        cond_free_k=5.0,
+                        cond_free_k=2.0,
                         temperature=temperature,
                         length_penalty=1.0,
                         repetition_penalty=2.0,
-                        top_p=0.8
+                        top_p=0.8,
+                        max_mel_tokens=500  # Add reasonable limit for longer texts
                     )
                     print(f"Generated audio for chunk {i}")
                 except RuntimeError as e:
@@ -387,15 +389,17 @@ class TTSManager:
                             chunk_with_emotion,
                             voice_samples=self.voice_samples,
                             conditioning_latents=self.conditioning_latents,
-                            preset='ultra_fast',
+                            preset='fast',  # Use 'fast' as base preset
                             use_deterministic_seed=True,
                             num_autoregressive_samples=retry_samples,
                             diffusion_iterations=retry_iterations,
-                            cond_free=False,
+                            cond_free=True,
+                            cond_free_k=2.0,
                             temperature=retry_temperature,
                             length_penalty=1.0,
                             repetition_penalty=2.0,
-                            top_p=0.8
+                            top_p=0.8,
+                            max_mel_tokens=500
                         )
                         print("Retry successful")
                     else:
