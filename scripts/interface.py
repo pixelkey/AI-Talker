@@ -179,40 +179,28 @@ def setup_gradio_interface(context):
                                 scale=1
                             )
                 with gr.Row():
-                    # Create a container div for consistent button heights
+                    speech_recognition_text = gr.Textbox(
+                        show_label=False,
+                        interactive=False,
+                        container=True,
+                        scale=1,
+                        elem_classes="full-width-textbox"
+                    )
+                    
                     gr.HTML("""
                         <style>
-                        #submit-btn, #clear-btn {
-                            height: 40px !important;
-                            min-height: 40px !important;
-                            max-height: 40px !important;
-                            margin: 0 !important;
-                            padding: 0 16px !important;
-                            display: inline-flex !important;
-                            align-items: center !important;
-                            justify-content: center !important;
-                            text-align: center !important;
-                            line-height: 1 !important;
+                        .gradio-container .full-width-textbox {
+                            width: 100% !important;
+                            max-width: 100% !important;
                         }
-                        #submit-btn span, #clear-btn span {
-                            display: inline-block !important;
-                            visibility: visible !important;
-                            opacity: 1 !important;
+                        .gradio-container .gr-text-input {
+                            border-radius: 8px !important;
+                            padding: 8px 16px !important;
+                            min-height: 40px !important;
+                            background-color: var(--neutral-100);
                         }
                         </style>
                     """)
-                    with gr.Column(scale=3):
-                        submit_text = gr.Button(
-                            "Submit",
-                            variant="primary",
-                            elem_id="submit-btn"
-                        )
-                    with gr.Column(scale=1):
-                        clear_btn = gr.Button(
-                            "Clear",
-                            variant="secondary",
-                            elem_id="clear-btn"
-                        )
             with gr.Column(scale=2):
                 references = gr.Textbox(
                     show_label=False,
@@ -221,24 +209,6 @@ def setup_gradio_interface(context):
                 )
                 
         # Set up event handlers
-        submit_text.click(
-            handle_user_input,
-            inputs=[input_text, chatbot],
-            outputs=[
-                chatbot,
-                references,
-                input_text,
-                gr.State(value=[]),
-                audio_output
-            ],
-            queue=True
-        ).success(
-            lambda: gr.update(interactive=True),
-            None,
-            [submit_text],
-            queue=False
-        )
-        
         input_text.submit(
             handle_user_input,
             inputs=[input_text, chatbot],
@@ -253,12 +223,12 @@ def setup_gradio_interface(context):
         )
         
         # Audio input with auto-submit
-        audio_input.change(
+        audio_input.stop_recording(
             speech_recognizer.transcribe_audio,
             inputs=[audio_input],
             outputs=[
                 input_text,
-                submit_text
+                speech_recognition_text
             ],
             queue=False
         ).success(
@@ -272,19 +242,6 @@ def setup_gradio_interface(context):
                 audio_output
             ],
             queue=True
-        )
-        
-        clear_btn.click(
-            clear_interface,
-            inputs=[chatbot],
-            outputs=[
-                chatbot,
-                references,
-                input_text,
-                gr.State(value=[]),
-                audio_output
-            ],
-            queue=False
         )
 
     return interface

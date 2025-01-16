@@ -81,7 +81,7 @@ class SelfReflection:
             try:
                 reflection_count = 0
                 reflection_history = []
-                max_reflections = 1 # Limit reflections for efficiency
+                max_reflections = 0 # Limit reflections for efficiency
                 
                 while not self.stop_reflection.is_set() and reflection_count < max_reflections:
                     # Check system resources and TTS status
