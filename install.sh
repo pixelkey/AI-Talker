@@ -212,25 +212,33 @@ fi
 
 # Upgrade pip and install requirements
 echo -e "${YELLOW}Installing Python dependencies...${NC}"
-python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade pip wheel setuptools
 
-# Install each requirement separately to better handle errors
-echo -e "${YELLOW}Installing individual packages...${NC}"
-while IFS= read -r line || [[ -n "$line" ]]; do
-    # Skip empty lines and comments
-    [[ -z "$line" ]] && continue
-    [[ "$line" =~ ^#.*$ ]] && continue
+# Check for GPU and set up CUDA environment
+if check_gpu; then
+    echo -e "${YELLOW}Setting up CUDA environment...${NC}"
     
-    echo -e "${YELLOW}Installing $line...${NC}"
-    if ! python3 -m pip install "$line"; then
-        echo -e "${RED}Failed to install $line${NC}"
-        exit 1
-    fi
-done < requirements.txt
+    # Get CUDA version
+    CUDA_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | cut -d'.' -f1)
+    echo -e "${GREEN}Detected CUDA version: $CUDA_VERSION${NC}"
+
+    # Set CUDA environment variables
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+fi
+
+# Install all dependencies from requirements.txt
+echo -e "${YELLOW}Installing dependencies from requirements.txt...${NC}"
+python3 -m pip install --no-cache-dir -r requirements.txt
+
+# Install NLTK data
+echo -e "${YELLOW}Installing NLTK data...${NC}"
+python3 -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger'); nltk.download('wordnet')"
 
 # Verify critical packages are installed
 echo -e "${YELLOW}Verifying installations...${NC}"
-REQUIRED_PACKAGES=("python-dotenv" "langchain" "openai" "gradio" "ollama")
+REQUIRED_PACKAGES=("python-dotenv" "langchain" "langchain-community" "langchain-openai" "openai" "gradio" "ollama" "faiss-cpu" "nltk" "tortoise-tts" "deepspeed")
 for package in "${REQUIRED_PACKAGES[@]}"; do
     if ! python3 -m pip show "$package" > /dev/null 2>&1; then
         echo -e "${RED}Critical package $package is not installed${NC}"
@@ -238,26 +246,10 @@ for package in "${REQUIRED_PACKAGES[@]}"; do
     fi
 done
 
-# Check for GPU and install CUDA/DeepSpeed if available
-if check_gpu; then
-    echo -e "${YELLOW}Setting up CUDA environment...${NC}"
-    # Check common CUDA paths (including Paperspace default)
-    CUDA_PATHS=("/usr/local/cuda" "/usr/cuda" "/opt/cuda")
-    for path in "${CUDA_PATHS[@]}"; do
-        if [ -d "$path" ]; then
-            export CUDA_HOME=$path
-            export PATH=$CUDA_HOME/bin:$PATH
-            export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
-            echo -e "${GREEN}CUDA found at: $CUDA_HOME${NC}"
-            break
-        fi
-    done
-
-    if [ -n "$CUDA_HOME" ]; then
-        echo -e "${YELLOW}Installing DeepSpeed...${NC}"
-        pip install deepspeed
-    fi
-fi
+# Create required directories
+echo -e "${YELLOW}Creating required directories...${NC}"
+mkdir -p ingest embeddings
+touch ingest/.gitkeep
 
 # Create .env file if it doesn't exist
 if [ ! -f ".env" ]; then
