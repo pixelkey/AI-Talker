@@ -66,23 +66,33 @@ class TTSManager:
         gen_config = {}
 
         # Optimize settings for different GPU memory sizes
-        if gpu_memory >= 24:  # For high-end GPUs (24GB+)
-            init_config["autoregressive_batch_size"] = 6
+        if gpu_memory >= 35:  # For very high-end GPUs (A5000, A6000, etc.)
+            init_config["autoregressive_batch_size"] = 4  # More conservative batch size
             gen_config.update({
                 "diffusion_iterations": 60,
-                "num_autoregressive_samples": 6
+                "num_autoregressive_samples": 4,
+                "length_penalty": 0.8,  # Slightly reduce length penalty
+                "repetition_penalty": 2.5,  # Increase repetition penalty
+                "top_k": 50,  # Add top_k sampling
+                "top_p": 0.85  # Slightly increase top_p
             })
-        elif gpu_memory >= 16:  # For GPUs with 16-24GB
+        elif gpu_memory >= 24:  # For high-end GPUs (24GB+)
             init_config["autoregressive_batch_size"] = 4
             gen_config.update({
-                "diffusion_iterations": 50,
+                "diffusion_iterations": 60,
                 "num_autoregressive_samples": 4
+            })
+        elif gpu_memory >= 16:  # For GPUs with 16-24GB
+            init_config["autoregressive_batch_size"] = 3
+            gen_config.update({
+                "diffusion_iterations": 50,
+                "num_autoregressive_samples": 3
             })
         elif gpu_memory >= 12:  # For GPUs with 12-16GB
             init_config["autoregressive_batch_size"] = 3
             gen_config.update({
                 "diffusion_iterations": 40,
-                "num_autoregressive_samples": 4
+                "num_autoregressive_samples": 3
             })
         else:  # For GPUs with less than 12GB
             init_config["autoregressive_batch_size"] = 1
@@ -274,6 +284,24 @@ class TTSManager:
         logger.info(f"Processed style cue '{style_cue}' into prompt '{final_prompt}' with temperature {final_temp}")
         return final_prompt, final_temp
 
+    def safe_tts_with_preset(self, text, **kwargs):
+        """Safely attempt TTS generation with fallback options"""
+        try:
+            return self.tts.tts_with_preset(text, **kwargs)
+        except RuntimeError as e:
+            if "expected a non-empty list of Tensors" in str(e):
+                # Try with more conservative settings
+                conservative_kwargs = kwargs.copy()
+                conservative_kwargs.update({
+                    "num_autoregressive_samples": max(1, kwargs.get("num_autoregressive_samples", 2) - 1),
+                    "temperature": min(1.2, kwargs.get("temperature", 1.0) + 0.2),
+                    "top_p": min(0.95, kwargs.get("top_p", 0.8) + 0.1),
+                    "repetition_penalty": max(1.5, kwargs.get("repetition_penalty", 2.0) - 0.2)
+                })
+                print("Retrying with more conservative settings:", conservative_kwargs)
+                return self.tts.tts_with_preset(text, **conservative_kwargs)
+            raise
+
     def text_to_speech(self, text):
         """Convert text to speech using Tortoise TTS with emotional prompting support.
         
@@ -351,21 +379,22 @@ class TTSManager:
                     # Get optimal settings based on GPU memory
                     _, gpu_config = self.get_optimal_tts_config()
                     
-                    gen = self.tts.tts_with_preset(
+                    gen = self.safe_tts_with_preset(
                         chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='fast',  
+                        preset='fast',
                         use_deterministic_seed=True,
                         num_autoregressive_samples=gpu_config.get('num_autoregressive_samples', 2),
                         diffusion_iterations=gpu_config.get('diffusion_iterations', 40),
                         cond_free=True,
                         cond_free_k=2.0,
                         temperature=temperature,
-                        length_penalty=1.0,
-                        repetition_penalty=2.0,
-                        top_p=0.8,
-                        max_mel_tokens=500  
+                        length_penalty=gpu_config.get('length_penalty', 1.0),
+                        repetition_penalty=gpu_config.get('repetition_penalty', 2.0),
+                        top_k=gpu_config.get('top_k', None),
+                        top_p=gpu_config.get('top_p', 0.8),
+                        max_mel_tokens=500
                     )
                     print(f"Generated audio for chunk {i}")
                 except RuntimeError as e:
@@ -384,20 +413,21 @@ class TTSManager:
                         retry_samples = max(1, gpu_config.get('num_autoregressive_samples', 1) - 1)
                         retry_iterations = max(20, gpu_config.get('diffusion_iterations', 30) - 10)
                         
-                        gen = self.tts.tts_with_preset(
+                        gen = self.safe_tts_with_preset(
                             chunk_with_emotion,
                             voice_samples=self.voice_samples,
                             conditioning_latents=self.conditioning_latents,
-                            preset='fast',  
+                            preset='fast',
                             use_deterministic_seed=True,
                             num_autoregressive_samples=retry_samples,
                             diffusion_iterations=retry_iterations,
                             cond_free=True,
                             cond_free_k=2.0,
                             temperature=retry_temperature,
-                            length_penalty=1.0,
-                            repetition_penalty=2.0,
-                            top_p=0.8,
+                            length_penalty=gpu_config.get('length_penalty', 1.0),
+                            repetition_penalty=gpu_config.get('repetition_penalty', 2.0),
+                            top_k=gpu_config.get('top_k', None),
+                            top_p=gpu_config.get('top_p', 0.8),
                             max_mel_tokens=500
                         )
                         print("Retry successful")
