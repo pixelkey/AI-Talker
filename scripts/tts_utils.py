@@ -342,7 +342,7 @@ class TTSManager:
                             preset='ultra_fast',
                             use_deterministic_seed=True,
                             num_autoregressive_samples=1,  # Reduced from previous setting
-                            diffusion_iterations=15,  # More aggressive reduction
+                            diffusion_iterations=20,  # More aggressive reduction
                             cond_free=False,  # Disable conditional free sampling to save memory
                             temperature=retry_temperature,
                             length_penalty=1.0,
