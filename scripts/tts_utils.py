@@ -6,6 +6,7 @@ import logging
 import tempfile
 import torchaudio
 import gc
+import json
 
 class TTSManager:
     def __init__(self, context):
@@ -22,7 +23,6 @@ class TTSManager:
         if torch.cuda.is_available():
             # Empty CUDA cache
             torch.cuda.empty_cache()
-            torch.cuda.memory.empty_cache()
             # Clear any existing models from memory
             if hasattr(self, 'tts') and self.tts is not None:
                 del self.tts
@@ -40,8 +40,10 @@ class TTSManager:
                 
     def _initialize_tts_internal(self):
         """Internal method for TTS initialization without recursive cleanup"""
-        # Set PyTorch memory optimization
+        # Configure DeepSpeed and PyTorch memory settings
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        os.environ['DEEPSPEED_ZERO_STAGE'] = '2'  # Enable ZeRO stage 2
+        os.environ['DEEPSPEED_ZERO_OPTIMIZATION'] = '1'  # Enable ZeRO optimization
         
         # Check CUDA capabilities
         use_cuda = torch.cuda.is_available()
@@ -53,20 +55,37 @@ class TTSManager:
             supports_float16 = compute_capability[0] >= 7  # Volta or newer architecture
             logging.info(f"GPU: {gpu_name}, Compute Capability: {compute_capability}")
             
-            # Check DeepSpeed availability
+            # Configure DeepSpeed
             try:
                 import deepspeed
                 logging.info("DeepSpeed is installed")
                 ds_version = deepspeed.__version__
                 logging.info(f"DeepSpeed version: {ds_version}")
                 
-                # Check if CUDA kernels are built
-                if hasattr(deepspeed, 'ops'):
-                    logging.info("DeepSpeed CUDA kernels are available")
-                else:
-                    logging.info("DeepSpeed CUDA kernels are not built")
+                # Initialize DeepSpeed config
+                ds_config = {
+                    "train_micro_batch_size_per_gpu": 1,
+                    "gradient_accumulation_steps": 1,
+                    "fp16": {
+                        "enabled": supports_float16,
+                        "loss_scale": 0,
+                        "initial_scale_power": 16,
+                        "loss_scale_window": 1000
+                    },
+                    "zero_optimization": {
+                        "stage": 2,
+                        "allgather_partitions": True,
+                        "reduce_scatter": True,
+                        "overlap_comm": True,
+                        "contiguous_gradients": True
+                    },
+                    "zero_allow_untested_optimizer": True
+                }
                 
+                # Set DeepSpeed config
+                os.environ['DEEPSPEED_CONFIG'] = json.dumps(ds_config)
                 use_deepspeed = True
+                logging.info("DeepSpeed configured successfully")
             except ImportError:
                 logging.warning("DeepSpeed is not installed")
                 use_deepspeed = False
@@ -82,10 +101,11 @@ class TTSManager:
         # Initialize TTS with optimal configuration
         tts_config = {
             "kv_cache": True,
-            "half": supports_float16,  # Only use half precision if supported
+            "half": supports_float16,
             "device": device,
             "autoregressive_batch_size": 1,
-            "use_deepspeed": use_deepspeed
+            "use_deepspeed": use_deepspeed,
+            "enable_redaction": False  # Disable redaction to save memory
         }
         logging.info(f"Initializing TTS with config: {tts_config}")
         self.tts = TextToSpeech(**tts_config)
@@ -330,6 +350,12 @@ class TTSManager:
                 
                 print("Generating autoregressive samples...")
                 try:
+                    # Check GPU memory before processing
+                    if torch.cuda.is_available():
+                        free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
+                        if free_memory < 2 * 1024 * 1024 * 1024:  # Less than 2GB free
+                            logger.warning(f"Low GPU memory ({free_memory/1024**3:.2f}GB free).")
+                    
                     # Add enhanced emotion prompt back to each chunk if it exists
                     chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
                     logger.info(f"Processing chunk with emotion prompt: '{chunk_with_emotion}'")
@@ -341,13 +367,13 @@ class TTSManager:
                         chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='ultra_fast',  # Changed from standard to ultra_fast for memory efficiency
+                        preset='ultra_fast',  
                         use_deterministic_seed=True,
-                        num_autoregressive_samples=2,  # Keep at 1 for memory efficiency
+                        num_autoregressive_samples=2,  
                         diffusion_iterations=30,
                         cond_free=True,
                         cond_free_k=5.0,
-                        temperature=temperature,  # Use emotion-based temperature
+                        temperature=temperature,  
                         length_penalty=1.0,
                         repetition_penalty=2.0,
                         top_p=0.8
@@ -357,16 +383,9 @@ class TTSManager:
                     print(f"Error generating audio for chunk {i}: {e}")
                     if "expected a non-empty list of Tensors" in str(e) or "out of memory" in str(e):
                         print("Retrying with different configuration...")
-                        # Try again with modified settings and emotion
                         chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
-                        
-                        # Use a slightly lower temperature for retry
                         retry_temperature = self.determine_temperature("", is_retry=True)
                         logger.info(f"Retry attempt using temperature: {retry_temperature}")
-                        
-                        # Clear memory before retry
-                        torch.cuda.empty_cache()
-                        gc.collect()
                         
                         gen = self.tts.tts_with_preset(
                             chunk_with_emotion,
@@ -374,9 +393,9 @@ class TTSManager:
                             conditioning_latents=self.conditioning_latents,
                             preset='ultra_fast',
                             use_deterministic_seed=True,
-                            num_autoregressive_samples=1,  # Reduced from previous setting
-                            diffusion_iterations=15,  # More aggressive reduction
-                            cond_free=False,  # Disable conditional free sampling to save memory
+                            num_autoregressive_samples=1,  
+                            diffusion_iterations=15,  
+                            cond_free=False,  
                             temperature=retry_temperature,
                             length_penalty=1.0,
                             repetition_penalty=2.0,
