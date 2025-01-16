@@ -66,18 +66,17 @@ class TTSManager:
         gen_config = {}
 
         # Optimize settings for different GPU memory sizes
-        # Using more conservative batch sizes due to full precision
         if gpu_memory >= 24:  # For high-end GPUs (24GB+)
-            init_config["autoregressive_batch_size"] = 4
+            init_config["autoregressive_batch_size"] = 6
             gen_config.update({
                 "diffusion_iterations": 60,
-                "num_autoregressive_samples": 3
+                "num_autoregressive_samples": 6
             })
         elif gpu_memory >= 16:  # For GPUs with 16-24GB
-            init_config["autoregressive_batch_size"] = 3
+            init_config["autoregressive_batch_size"] = 4
             gen_config.update({
                 "diffusion_iterations": 50,
-                "num_autoregressive_samples": 2
+                "num_autoregressive_samples": 4
             })
         elif gpu_memory >= 12:  # For GPUs with 12-16GB
             init_config["autoregressive_batch_size"] = 3
@@ -356,7 +355,7 @@ class TTSManager:
                         chunk_with_emotion,
                         voice_samples=self.voice_samples,
                         conditioning_latents=self.conditioning_latents,
-                        preset='fast',  # Use 'fast' as base preset
+                        preset='fast',  
                         use_deterministic_seed=True,
                         num_autoregressive_samples=gpu_config.get('num_autoregressive_samples', 2),
                         diffusion_iterations=gpu_config.get('diffusion_iterations', 40),
@@ -366,7 +365,7 @@ class TTSManager:
                         length_penalty=1.0,
                         repetition_penalty=2.0,
                         top_p=0.8,
-                        max_mel_tokens=500  # Add reasonable limit for longer texts
+                        max_mel_tokens=500  
                     )
                     print(f"Generated audio for chunk {i}")
                 except RuntimeError as e:
@@ -389,7 +388,7 @@ class TTSManager:
                             chunk_with_emotion,
                             voice_samples=self.voice_samples,
                             conditioning_latents=self.conditioning_latents,
-                            preset='fast',  # Use 'fast' as base preset
+                            preset='fast',  
                             use_deterministic_seed=True,
                             num_autoregressive_samples=retry_samples,
                             diffusion_iterations=retry_iterations,
