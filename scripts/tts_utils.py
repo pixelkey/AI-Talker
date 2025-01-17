@@ -106,10 +106,10 @@ class TTSManager:
                 "num_autoregressive_samples": 3
             })
         else:  # For GPUs with less than 12GB
-            init_config["autoregressive_batch_size"] = 1
+            init_config["autoregressive_batch_size"] = 2
             gen_config.update({
                 "diffusion_iterations": 40,
-                "num_autoregressive_samples": 3
+                "num_autoregressive_samples": 2
             })
 
         return init_config, gen_config

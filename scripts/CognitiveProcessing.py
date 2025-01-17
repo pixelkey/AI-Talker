@@ -903,6 +903,7 @@ Key Decision Points:
 3. Information Completeness:
    - Does the RAG context ACTUALLY CONTAIN the specific information asked for? 
    - Just mentioning a topic/name is NOT enough - we need the specific details requested
+   - For location-specific information (restaurants, businesses, etc), RAG must contain CURRENT details
    - If the RAG only mentions something exists but doesn't provide details, we NEED a web search
 
 4. Information Quality:
