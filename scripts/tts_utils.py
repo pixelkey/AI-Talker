@@ -109,7 +109,7 @@ class TTSManager:
             init_config["autoregressive_batch_size"] = 1
             gen_config.update({
                 "diffusion_iterations": 40,
-                "num_autoregressive_samples": 1
+                "num_autoregressive_samples": 3
             })
 
         return init_config, gen_config

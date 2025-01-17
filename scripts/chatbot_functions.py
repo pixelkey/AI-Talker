@@ -83,7 +83,10 @@ def chatbot_response(input_text, context_documents, context, history):
     if web_search_results["needs_web_search"] and web_search_results["web_results"]:
         web_ref = "Web Search Results:\n" + web_search_results["web_results"]
         
-        # Format web search results for both display and saving
+        # Add to final context for LLM
+        final_context.append(web_ref)
+        
+        # Format web search results for history display and saving
         timestamp_msg = f"[{formatted_time}]\nUser: {input_text}"
         history.append([timestamp_msg, f"[{formatted_time}]\nBot: {web_ref}"])
         

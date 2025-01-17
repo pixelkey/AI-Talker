@@ -25,8 +25,9 @@ env_config = {
             "Keep your answers relatively short (only one sentance) unless the answer requires a longer response."
             "Do not make up memories. Only use memories that are from the references or conversation history."
             "Try to keep the conversation interesting and engaging. Ask a question that will help the conversation move forward."
-            "Don't include URLS in your answers. Convert any non-speakable text into natural language."
+            "Don't include URLS in your answers. Convert any non-speakable text into natural language. For example, 'e.g.' should be displayed as 'for example'."
             "Change acronyms and abbreviations into their full form."
+            "Do not use phrases like 'it sounds like' or 'it looks like'."
         ),
         "type": str
     },
