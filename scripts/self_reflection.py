@@ -125,13 +125,10 @@ class SelfReflection:
                         temp_context
                     )
                     
-                    # Filter references for relevance
-                    current_refs = self._filter_references(refs, current_exchange)
-                    
-                    # Generate reflection with filtered context
+                    # Generate reflection with context
                     _, reflection, _, _ = chatbot_response(
                         reflection_prompt,
-                        current_refs,
+                        refs,
                         temp_context,
                         current_exchange
                     )
@@ -144,13 +141,13 @@ class SelfReflection:
                     
                     # Format reflection with context
                     current_conversation = self._format_history(current_exchange)
-                    full_reflection = f"Reflection #{reflection_count + 1}:\n{reflection}\n\nCurrent Conversation:\n{current_conversation}\n\nRelevant Context:\n{current_refs if current_refs else 'No additional context found.'}"
+                    full_reflection = f"Reflection #{reflection_count + 1}:\n{reflection}\n\nCurrent Conversation:\n{current_conversation}\n\nRelevant Context:\n{refs if refs else 'No additional context found.'}"
                     
                     # Save reflection with context and update embeddings
                     self.history_manager.add_reflection(
                         reflection,
                         context={
-                            "references": current_refs,
+                            "references": refs,
                             "prompt": reflection_prompt,
                             "reflection_number": reflection_count + 1,
                             "timestamp": self._parse_timestamp(datetime.now(pytz.timezone('Australia/Adelaide')).isoformat())
@@ -546,20 +543,6 @@ Keep the framework focused on my continuous learning and improvement."""
         if isinstance(message, tuple):
             return message[1].replace("Bot: ", "")
         return message.replace("User: ", "").replace("Bot: ", "")
-
-    def _filter_references(self, refs, current_messages):
-        """Filter references to only include those containing current messages"""
-        if not current_messages:
-            return refs
-            
-        current_conversation_refs = []
-        current_contents = [self._get_message_content(msg) for msg in current_messages]
-        
-        for ref in refs:
-            if any(content in ref for content in current_contents):
-                current_conversation_refs.append(ref)
-        
-        return current_conversation_refs if current_conversation_refs else refs
 
     def _parse_timestamp(self, timestamp_str):
         """Parse timestamp with timezone information"""

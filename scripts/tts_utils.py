@@ -112,7 +112,7 @@ class TTSManager:
             })
             gen_config.update({
                 "diffusion_iterations": 40,
-                "num_autoregressive_samples": 2
+                "num_autoregressive_samples": 1
             })
 
         return init_config, gen_config

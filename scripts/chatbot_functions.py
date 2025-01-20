@@ -308,13 +308,25 @@ def build_local_prompt(system_prompt, history, context_documents, input_text):
     """
     prompt = f"{system_prompt}\n\n"
 
+    # Add conversation history
     if history:
         prompt += "Conversation History:\n"
         for user_msg, bot_msg in history:
             prompt += f"{user_msg}\n{bot_msg}\n"
         prompt += "\n"
 
-    prompt += f"Context Documents:\n{context_documents}\n\nUser Prompt:\n{input_text}"
+    # Add context documents only if they don't duplicate the conversation history
+    if context_documents and context_documents.strip() != "No relevant documents found.":
+        # Convert both to lowercase for comparison
+        history_text = prompt.lower()
+        context_text = context_documents.lower()
+        
+        # Only add context if it's not just repeating the conversation history
+        if "conversation history:" not in context_text or \
+           not all(msg[0].lower() in context_text and msg[1].lower() in context_text for msg in history):
+            prompt += f"Context Documents:\n{context_documents}\n\n"
+
+    prompt += f"User Prompt:\n{input_text}"
     return prompt
 
 def evaluate_rag_results(references: str, query: str, context: dict) -> str:
