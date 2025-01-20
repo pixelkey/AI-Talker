@@ -197,14 +197,16 @@ def setup_gradio_interface(context):
                 )
                 
         # Set up event handlers
+        chat_history = gr.State(value=[])
+        
         input_text.submit(
             handle_user_input,
-            inputs=[input_text, gr.State(value=[])],
+            inputs=[input_text, chat_history],
             outputs=[
                 chatbot,
                 references,
                 input_text,
-                gr.State(value=[]),
+                chat_history,
                 audio_output
             ],
             queue=True
@@ -218,12 +220,12 @@ def setup_gradio_interface(context):
             queue=False
         ).success(
             handle_user_input,
-            inputs=[input_text, gr.State(value=[])],
+            inputs=[input_text, chat_history],
             outputs=[
                 chatbot,
                 references,
                 input_text,
-                gr.State(value=[]),
+                chat_history,
                 audio_output
             ],
             queue=True

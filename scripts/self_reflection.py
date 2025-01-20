@@ -317,22 +317,26 @@ Respond with only a number between 0.0 and 1.0."""
                             logger.info("Performing web search for: " + search_query)
                             
                             # Get web search results
-                            web_results = self.context['cognitive_processor'].perform_web_search(search_query)
+                            from CognitiveProcessing import perform_web_search, get_detailed_web_content
+                            search_results = perform_web_search(search_query, self.context.get('ddgs'))
                             
-                            if web_results:
-                                # Process web search results
-                                web_memory_type, web_memory_content = self._process_web_search_results(search_query, web_results)
-                                if web_memory_content:
-                                    current_time = self.context.get('current_time')
-                                    if isinstance(current_time, str):
-                                        current_time = self._parse_timestamp(current_time)
-                                        
-                                    web_memory = {
-                                        'content': web_memory_content,
-                                        'type': web_memory_type,
-                                        'query': search_query,
-                                        'timestamp': current_time.isoformat()
-                                    }
+                            if search_results:
+                                # Get detailed content
+                                web_results = get_detailed_web_content(search_results, search_query, self.context)
+                                if web_results:
+                                    # Process web search results
+                                    web_memory_type, web_memory_content = self._process_web_search_results(search_query, web_results)
+                                    if web_memory_content:
+                                        current_time = self.context.get('current_time')
+                                        if isinstance(current_time, str):
+                                            current_time = self._parse_timestamp(current_time)
+                                            
+                                        web_memory = {
+                                            'content': web_memory_content,
+                                            'type': web_memory_type,
+                                            'query': search_query,
+                                            'timestamp': current_time.isoformat()
+                                        }
             else:
                 logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
 
