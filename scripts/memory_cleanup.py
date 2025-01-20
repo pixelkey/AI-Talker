@@ -194,10 +194,14 @@ class MemoryCleanupManager:
                 return
 
             current_time = self.context.get('current_time')
+            if not current_time:
+                logger.error("No current_time in context")
+                return
+            
             if isinstance(current_time, str):
                 current_time = self._parse_timestamp(current_time)
             if not current_time:
-                logger.error("Could not get current time")
+                logger.error("Could not parse current_time")
                 return
 
             logger.info(f"Starting memory cleanup at {current_time}")
@@ -269,7 +273,7 @@ class MemoryCleanupManager:
                     # Save changes to disk
                     embeddings_dir = Path(self.context.get('embeddings_dir', 'embeddings'))
                     faiss_path = str(embeddings_dir / 'index.faiss')
-                    metadata_path = str(embeddings_dir / 'metadata.json')
+                    metadata_path = str(embeddings_dir / 'metadata.pkl')  
                     docstore_path = str(embeddings_dir / 'docstore.pkl')
                     
                     # Ensure directories exist
@@ -365,6 +369,9 @@ class MemoryCleanupManager:
         """Main cleanup loop that runs periodically"""
         while not self.stop_cleanup.is_set():
             try:
+                # Update current time in context
+                self.context['current_time'] = datetime.now(timezone.utc)
+                
                 # Only run cleanup if needed and no other processing is happening
                 if self.should_run_cleanup() and not self.context.get('is_processing', False):
                     self.is_cleaning = True
