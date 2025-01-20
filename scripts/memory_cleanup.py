@@ -2,7 +2,7 @@ import threading
 import time
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from typing import Optional
 import traceback
@@ -197,9 +197,11 @@ class MemoryCleanupManager:
 
             logger.info(f"Starting memory cleanup at {current_time}")
             
-            all_docs = vector_store.docstore.docs
+            # Get all documents from vector store
+            docstore = vector_store.docstore
+            all_docs = docstore._dict if hasattr(docstore, '_dict') else {}
             docs_to_remove = []
-            indices_to_remove = []
+            indices_to_remove = []  # Track FAISS indices to remove
             evaluation_results = {}  # Track evaluation results for logging
 
             # Check each document for expiry and usefulness
@@ -247,11 +249,12 @@ class MemoryCleanupManager:
             if docs_to_remove:
                 logger.info(f"Removing {len(docs_to_remove)} documents")
                 try:
-                    # Remove from docstore and FAISS index
+                    # Remove from docstore
                     for doc_id in docs_to_remove:
-                        if doc_id in vector_store.docstore.docs:
-                            del vector_store.docstore.docs[doc_id]
+                        if doc_id in docstore._dict:
+                            del docstore._dict[doc_id]
                     
+                    # Remove from FAISS index if indices found
                     if indices_to_remove and hasattr(vector_store, 'index'):
                         indices_to_remove.sort(reverse=True)
                         for idx in indices_to_remove:
@@ -288,18 +291,73 @@ class MemoryCleanupManager:
             logger.error(f"Error during memory cleanup: {str(e)}")
             logger.error(traceback.format_exc())
 
+    def _get_last_cleanup_from_logs(self) -> Optional[datetime]:
+        """Get the last cleanup time from logs"""
+        try:
+            summary_file = self.log_dir / 'cleanup_summary.json'
+            if not summary_file.exists():
+                return None
+                
+            with open(summary_file, 'r') as f:
+                summary = json.load(f)
+                
+            if not summary.get('cleanups'):
+                return None
+                
+            # Get the most recent cleanup timestamp
+            last_cleanup = summary['cleanups'][-1]['timestamp']
+            return datetime.strptime(last_cleanup, '%Y%m%d_%H%M%S').replace(tzinfo=timezone.utc)
+            
+        except Exception as e:
+            logger.error(f"Error reading last cleanup time from logs: {str(e)}")
+            return None
+
+    def should_run_cleanup(self) -> bool:
+        """Check if cleanup should run based on last cleanup time"""
+        try:
+            current_time = self.context.get('current_time')
+            if isinstance(current_time, str):
+                current_time = self._parse_timestamp(current_time)
+            if not current_time:
+                logger.error("Could not get current time")
+                return False
+
+            # Get last cleanup time from logs or memory
+            last_cleanup = self._get_last_cleanup_from_logs()
+            if not last_cleanup:
+                # If no log found, use in-memory time or return True for first run
+                last_cleanup = self.last_cleanup_time
+                if not last_cleanup:
+                    logger.info("No previous cleanup found, should run first cleanup")
+                    return True
+
+            # Check if an hour has passed
+            time_since_cleanup = current_time - last_cleanup
+            should_run = time_since_cleanup.total_seconds() >= 3600  # 1 hour
+
+            if should_run:
+                logger.info(f"Last cleanup was {time_since_cleanup.total_seconds()/3600:.1f} hours ago, should run cleanup")
+            else:
+                logger.debug(f"Only {time_since_cleanup.total_seconds()/3600:.1f} hours since last cleanup, skipping")
+
+            return should_run
+
+        except Exception as e:
+            logger.error(f"Error checking if should run cleanup: {str(e)}")
+            return False
+
     def _cleanup_loop(self) -> None:
         """Main cleanup loop that runs periodically"""
         while not self.stop_cleanup.is_set():
             try:
-                # Only run cleanup if no other important processing is happening
-                if not self.context.get('is_processing', False):
+                # Only run cleanup if needed and no other processing is happening
+                if self.should_run_cleanup() and not self.context.get('is_processing', False):
                     self.is_cleaning = True
                     self._cleanup_expired_memories()
                     self.is_cleaning = False
                 
-                # Sleep for the cleanup interval, but check stop flag every second
-                for _ in range(self.cleanup_interval):
+                # Check every minute instead of every hour
+                for _ in range(60):  # 1 minute sleep broken into 1-second chunks
                     if self.stop_cleanup.is_set():
                         break
                     time.sleep(1)
@@ -309,6 +367,14 @@ class MemoryCleanupManager:
                 logger.error(traceback.format_exc())
                 self.is_cleaning = False
                 time.sleep(60)  # Wait a bit before retrying after error
+
+    def get_next_cleanup_time(self) -> Optional[datetime]:
+        """Get the time of the next scheduled cleanup"""
+        if not self.last_cleanup_time:
+            return datetime.now(timezone.utc)  # First cleanup will happen soon
+        
+        next_cleanup = self.last_cleanup_time + timedelta(seconds=self.cleanup_interval)
+        return next_cleanup
 
     def start_cleanup_thread(self) -> None:
         """Start the background cleanup thread"""

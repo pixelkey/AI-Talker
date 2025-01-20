@@ -64,6 +64,12 @@ def setup_gradio_interface(context):
     memory_cleanup = MemoryCleanupManager(context)
     context['memory_cleanup'] = memory_cleanup
     memory_cleanup.start_cleanup_thread()
+    if memory_cleanup.should_run_cleanup():
+        logger.info("Memory cleanup needed - will run shortly")
+    else:
+        last_cleanup = memory_cleanup._get_last_cleanup_from_logs()
+        if last_cleanup:
+            logger.info(f"Last memory cleanup was at {last_cleanup}")
     
     # Create the watcher but don't start it yet - we'll manually trigger updates
     watcher = IngestWatcher(embedding_updater.update_embeddings)
