@@ -76,7 +76,7 @@ def chatbot_response(input_text, context_documents, context, history):
         final_context.append(formatted_history)
     
     # Add web search results if they exist and haven't been included yet
-    if web_search_results["needs_web_search"] and web_search_results["web_results"]:
+    if web_search_results["web_results"]:
         web_ref = "Web Search Results:\n" + web_search_results["web_results"]
         
         # Add to final context for LLM
@@ -411,41 +411,44 @@ def clear_history(context, history):
         return history, "", ""
 
 def parse_timestamp(timestamp_str: str) -> datetime:
-    """
-    Parse an ISO format timestamp string into a datetime object.
-    Handles both basic ISO format and extended formats.
-    """
+    """Parse timestamp with flexible format handling"""
     try:
-        # Remove the 'T' separator if present
-        timestamp_str = timestamp_str.replace('T', ' ')
+        # Try different timestamp formats
+        formats = [
+            '%Y-%m-%d %H:%M:%S%z',  # Standard format with timezone
+            '%Y-%m-%d %H:%M:%S %z',  # With space before timezone
+            '%Y-%m-%d %H:%M:%S',     # Without timezone
+            '%Y-%m-%dT%H:%M:%S%z',   # ISO format with timezone
+            '%Y-%m-%dT%H:%M:%S',     # ISO format without timezone
+            '%Y-%m-%d %H:%M:%S%z',   # With timezone offset
+            '%Y-%m-%d %H:%M:%S+%z'   # With + before timezone
+        ]
         
-        # Split into date, time, and timezone parts
-        date_time = timestamp_str.rsplit('+', 1)[0].rsplit('-', 1)[0].strip()
+        # Clean up the timestamp string
+        timestamp_str = timestamp_str.strip()
         
-        # Parse the main part
-        dt = datetime.strptime(date_time, '%Y-%m-%d %H:%M:%S')
-        
-        # Handle timezone if present
+        # Handle timezone separately if it exists
         if '+' in timestamp_str:
-            # Extract hours and minutes from timezone
-            tz = timestamp_str.split('+')[1]
-            if ':' in tz:
-                h, m = map(int, tz.split(':'))
-            else:
-                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
-            dt = dt.replace(tzinfo=timezone(timedelta(hours=h, minutes=m)))
-        elif timestamp_str.count('-') > 2:  # Has negative timezone
-            tz = timestamp_str.split('-')[-1]
-            if ':' in tz:
-                h, m = map(int, tz.split(':'))
-            else:
-                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
-            dt = dt.replace(tzinfo=timezone(timedelta(hours=-h, minutes=-m)))
-            
-        return dt
+            main_part, tz_part = timestamp_str.rsplit('+', 1)
+            if ':' in tz_part:  # Handle +HH:MM format
+                tz_part = tz_part.replace(':', '')
+            timestamp_str = f"{main_part}+{tz_part}"
+        
+        # Try each format
+        for fmt in formats:
+            try:
+                return datetime.strptime(timestamp_str, fmt)
+            except ValueError:
+                continue
+                
+        # If none of the formats work, try parsing with dateutil
+        from dateutil import parser
+        return parser.parse(timestamp_str)
+        
     except Exception as e:
-        logging.error(f"Error parsing timestamp {timestamp_str}: {e}")
-        return datetime.now().astimezone()
+        logging.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
+        # Return current time as fallback
+        return datetime.now()
 
 def format_messages(history: List[str], current_time: str) -> str:
     """Format message history for context."""

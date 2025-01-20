@@ -68,5 +68,6 @@ def initialize_model_and_retrieval():
         "TOP_SIMILARITY_RESULTS": config.TOP_SIMILARITY_RESULTS,
         "MODEL_SOURCE": config.MODEL_SOURCE,
         "ddgs": ddgs,  # Add DuckDuckGo search instance
+        "skip_web_search": False  # Default to allowing web search
     }
     return context

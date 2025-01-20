@@ -701,7 +701,7 @@ EXCERPT: [If relevant, include the most pertinent information here. Otherwise wr
     
     return is_relevant, excerpt
 
-def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict, max_pages: int = 3, timeout_seconds: int = 30) -> str:
+def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict) -> str:
     """
     Get detailed content from web pages based on search results.
     Uses ThreadPoolExecutor for parallel processing with improved concurrency.
@@ -714,14 +714,14 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
     
     def is_timed_out() -> bool:
         elapsed = time.time() - start_time
-        if elapsed >= timeout_seconds:
+        if elapsed >= 30:
             logging.warning(f"Web search timed out after {elapsed:.1f} seconds")
             return True
         return False
 
     # First process any results that already have fresh content
     for result in search_results:
-        if len(all_content) >= max_pages or is_timed_out():
+        if len(all_content) >= 3 or is_timed_out():
             break
             
         url = result.get('url') or result.get('link')
@@ -764,10 +764,10 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
         return None
 
     # Only scrape additional URLs if we need more content
-    if len(all_content) < max_pages and not is_timed_out():
+    if len(all_content) < 3 and not is_timed_out():
         remaining_urls = []
         for result in search_results:
-            if len(remaining_urls) >= (max_pages - len(all_content)) * 2:  # Get 2x the URLs we still need
+            if len(remaining_urls) >= (3 - len(all_content)) * 2:  # Get 2x the URLs we still need
                 break
             url = result.get('url') or result.get('link')
             if url and url not in processed_urls and url.startswith(('http://', 'https://')):
@@ -779,7 +779,7 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
                 future_to_url = {executor.submit(process_single_url, url, idx): url for url, idx in remaining_urls}
                 
                 for future in concurrent.futures.as_completed(future_to_url):
-                    if is_timed_out() or len(all_content) >= max_pages:
+                    if is_timed_out() or len(all_content) >= 3:
                         for f in future_to_url:
                             f.cancel()
                         break
@@ -848,6 +848,13 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
             "needs_web_search": False,
             "web_results": ""
         }
+    
+    # Early return if web search is disabled
+    if context.get('skip_web_search', False):
+        return {
+            "needs_web_search": False,
+            "web_results": ""
+        }
         
     result = {
         "needs_web_search": False,
@@ -855,9 +862,22 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
     }
     
     try:
-        # Get recent messages for context
-        recent_messages = context["memory"].messages[-5:]
-        formatted_messages = [f"{msg.type}: {msg.content}" for msg in recent_messages]
+        # Get recent conversation history
+        recent_messages = []
+        if "memory" in context:
+            try:
+                memory = context["memory"]
+                if hasattr(memory, "chat_memory") and hasattr(memory.chat_memory, "messages"):
+                    chat_history = memory.chat_memory.messages[-5:]
+                elif hasattr(memory, "buffer"):
+                    # Handle ConversationBufferMemory
+                    chat_history = [{"type": "human" if i % 2 == 0 else "assistant", "content": msg} 
+                                  for i, msg in enumerate(memory.buffer.split('\n')[-10:] if memory.buffer else [])]
+                else:
+                    chat_history = []
+                recent_messages = [f"{msg['type']}: {msg['content']}" for msg in chat_history]
+            except Exception as e:
+                logging.warning(f"Could not retrieve chat history: {str(e)}")
         
         # First, check for explicit search requests or real-time information needs
         explicit_search_terms = ["search", "look up", "find", "what is", "how to", "current", "latest", "news", "weather", "price", "status"]
@@ -923,7 +943,7 @@ NO Web Search Needed For:
 
 Current Query: {query}
 RAG Summary: {rag_summary if rag_summary else "No relevant information found in RAG"}
-Recent Messages: {formatted_messages}
+Recent Messages: {recent_messages}
 
 Respond in this format:
 NEEDS_SEARCH: [YES/NO]
