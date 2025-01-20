@@ -116,7 +116,10 @@ Respond with only a number between 0.0 and 1.0."""
 
     def _determine_memory_type(self, surprise_score: float) -> Tuple[str, Optional[datetime]]:
         """Determine memory type and expiry based on surprise score"""
+        # Parse current time if it's a string
         current_time = self.context.get('current_time')
+        if isinstance(current_time, str):
+            current_time = self._parse_timestamp(current_time)
         
         if surprise_score >= self.surprise_thresholds['high']:
             return 'long_term', None
@@ -229,16 +232,23 @@ Respond with only a number between 0.0 and 1.0."""
             logger.error(f"Error processing web search results: {e}")
             return 'short_term', None
 
-    def _calculate_expiry(self, memory_type: str) -> datetime:
+    def _calculate_expiry(self, memory_type: str) -> Optional[datetime]:
         """Calculate expiry date for a memory type"""
-        current_time = self.context.get('current_time')
-        
-        if memory_type == 'long_term':
-            return None  # Long-term memories don't expire
-        elif memory_type == 'mid_term':
-            return current_time + timedelta(days=self.memory_expiry['mid_term'])
-        else:  # short_term
-            return current_time + timedelta(days=self.memory_expiry['short_term'])
+        try:
+            # Parse current time if it's a string
+            current_time = self.context.get('current_time')
+            if isinstance(current_time, str):
+                current_time = self._parse_timestamp(current_time)
+            
+            if memory_type == 'long_term':
+                return None  # Long-term memories don't expire
+            elif memory_type == 'mid_term':
+                return current_time + timedelta(days=self.memory_expiry['mid_term'])
+            else:  # short_term
+                return current_time + timedelta(days=self.memory_expiry['short_term'])
+        except Exception as e:
+            logging.error(f"Error calculating expiry: {str(e)}")
+            return None
 
     def process_conversation(self, current_exchange: List[Tuple[str, str]]) -> None:
         """Process a conversation exchange and generate reflection"""
@@ -273,11 +283,15 @@ Respond with only a number between 0.0 and 1.0."""
                 
                 # Save initial memory first
                 if memory_data:
+                    current_time = self.context.get('current_time')
+                    if isinstance(current_time, str):
+                        current_time = self._parse_timestamp(current_time)
+                        
                     metadata = {
                         'memory_type': memory_type,
                         'expiry_date': expiry.isoformat() if expiry else None,
                         'surprise_score': surprise_score,
-                        'timestamp': self.context.get('current_time').isoformat()
+                        'timestamp': current_time.isoformat()
                     }
                     self.history_manager.add_reflection(memory_data, context=metadata)
                     
@@ -285,12 +299,12 @@ Respond with only a number between 0.0 and 1.0."""
                     memory_doc = Document(
                         page_content=memory_data,
                         metadata={
-                            'source': 'memory',
+                            'source': 'conversation',
                             'type': memory_type,
                             'expiry_date': metadata['expiry_date'],
                             'surprise_score': surprise_score,
                             'timestamp': metadata['timestamp'],
-                            'content_type': 'conversation_memory'
+                            'content_type': 'memory'
                         }
                     )
                     vector_store = self.context.get('vector_store')
@@ -298,26 +312,27 @@ Respond with only a number between 0.0 and 1.0."""
                         vector_store.add_documents([memory_doc])
                         logger.info(f"Added conversation memory to embeddings")
                         
-                        # Only after saving initial memory, check if web search is needed
-                        if search_needed and search_query:
-                            from CognitiveProcessing import perform_web_search, get_detailed_web_content
+                        # Process web search if needed and score warrants it
+                        if search_needed and search_query and surprise_score >= self.surprise_thresholds['low']:
+                            logger.info("Performing web search for: " + search_query)
                             
-                            logger.info(f"Performing web search for: {search_query}")
-                            # Use existing web search infrastructure
-                            search_results = perform_web_search(search_query, self.context.get('ddgs'))
-                            if search_results:
-                                # Get detailed content using existing function
-                                detailed_content = get_detailed_web_content(search_results, search_query, self.context)
-                                if detailed_content:
-                                    # Process web content into memory
-                                    web_memory_type, summary = self._process_web_search_results(search_query, detailed_content)
-                                    if summary:
-                                        web_memory = {
-                                            'content': summary,
-                                            'type': web_memory_type,
-                                            'query': search_query,
-                                            'timestamp': self.context.get('current_time').isoformat()
-                                        }
+                            # Get web search results
+                            web_results = self.context['cognitive_processor'].perform_web_search(search_query)
+                            
+                            if web_results:
+                                # Process web search results
+                                web_memory_type, web_memory_content = self._process_web_search_results(search_query, web_results)
+                                if web_memory_content:
+                                    current_time = self.context.get('current_time')
+                                    if isinstance(current_time, str):
+                                        current_time = self._parse_timestamp(current_time)
+                                        
+                                    web_memory = {
+                                        'content': web_memory_content,
+                                        'type': web_memory_type,
+                                        'query': search_query,
+                                        'timestamp': current_time.isoformat()
+                                    }
             else:
                 logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
 
@@ -586,21 +601,6 @@ Respond with only a number between 0.0 and 1.0."""
             logging.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
             # Return current time as fallback
             return datetime.now()
-
-    def _calculate_expiry(self, memory_type: str) -> Optional[datetime]:
-        """Calculate expiry date for a memory type"""
-        try:
-            current_time = self._parse_timestamp(self.context.get('current_time', '2025-01-20T18:20:58+10:30'))
-            
-            if memory_type == 'long_term':
-                return None  # Long-term memories don't expire
-            elif memory_type == 'mid_term':
-                return current_time + timedelta(days=self.memory_expiry['mid_term'])
-            else:  # short_term
-                return current_time + timedelta(days=self.memory_expiry['short_term'])
-        except Exception as e:
-            logging.error(f"Error calculating expiry: {str(e)}")
-            return None
 
     def start_reflection(self, messages, update_ui_callback=None):
         """

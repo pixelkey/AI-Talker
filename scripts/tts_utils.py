@@ -111,7 +111,7 @@ class TTSManager:
                 "half": True  # Enable half-precision for low memory GPUs
             })
             gen_config.update({
-                "diffusion_iterations": 40,
+                "diffusion_iterations": 30,
                 "num_autoregressive_samples": 1
             })
 
