@@ -22,6 +22,7 @@ class SelfReflection:
         self.context = context
         self.reflection_thread = None
         self.stop_reflection = threading.Event()
+        self.pause_event = threading.Event()
         self.user_input_queue = Queue()
         self.is_reflecting = False
         
@@ -434,28 +435,37 @@ Respond with only a number between 0.0 and 1.0."""
             self.stop_reflection.set()
             self.reflection_thread.join()
 
+    def pause_reflection(self):
+        """Pause the reflection process"""
+        self.pause_event.set()
+        
+    def resume_reflection(self):
+        """Resume the reflection process"""
+        self.pause_event.clear()
+
     def _reflection_loop(self) -> None:
         """Main reflection loop"""
         while not self.stop_reflection.is_set():
             try:
-                # Get next conversation to process
-                current_exchange = self.user_input_queue.get(timeout=1)
-                
-                # Check for stop signal
-                if current_exchange is None:
+                # Check if we're paused
+                if self.pause_event.is_set():
+                    time.sleep(1)
                     continue
                     
-                self.is_reflecting = True
-                
-                # Process the conversation
-                self.process_conversation(current_exchange)
-                
-            except Empty:
-                continue
+                # Process any queued conversations
+                try:
+                    history = self.user_input_queue.get(timeout=1)
+                    self.is_reflecting = True
+                    self.process_conversation(history)
+                    self.is_reflecting = False
+                except Empty:
+                    continue
+                    
             except Exception as e:
-                logger.error(f"Error in reflection loop: {e}")
-            finally:
+                logger.error(f"Error in reflection loop: {str(e)}")
+                logger.error(traceback.format_exc())
                 self.is_reflecting = False
+                time.sleep(5)  # Wait a bit before retrying
 
     def queue_conversation(self, history: List[Tuple[str, str]]) -> None:
         """Queue a conversation for reflection"""

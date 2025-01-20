@@ -18,6 +18,9 @@ from queue import Queue
 from datetime import datetime
 from memory_cleanup import MemoryCleanupManager
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 def setup_gradio_interface(context):
     """
     Sets up the Gradio interface.
@@ -59,6 +62,8 @@ def setup_gradio_interface(context):
     
     # Initialize self reflection
     self_reflection = SelfReflection(context)
+    context['self_reflection'] = self_reflection
+    self_reflection.start_reflection_thread()
     
     # Initialize memory cleanup manager
     memory_cleanup = MemoryCleanupManager(context)

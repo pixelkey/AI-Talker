@@ -25,6 +25,7 @@ class MemoryCleanupManager:
         self.cleanup_interval = cleanup_interval
         self.cleanup_thread = None
         self.stop_cleanup = threading.Event()
+        self.pause_event = threading.Event()
         self.is_cleaning = False
         self.last_cleanup_time = None
         
@@ -365,12 +366,25 @@ class MemoryCleanupManager:
             logger.error(f"Error checking if should run cleanup: {str(e)}")
             return False
 
+    def pause_cleanup(self):
+        """Pause the cleanup process"""
+        self.pause_event.set()
+        
+    def resume_cleanup(self):
+        """Resume the cleanup process"""
+        self.pause_event.clear()
+        
     def _cleanup_loop(self) -> None:
         """Main cleanup loop that runs periodically"""
         while not self.stop_cleanup.is_set():
             try:
                 # Update current time in context
                 self.context['current_time'] = datetime.now(timezone.utc)
+                
+                # Check if we're paused
+                if self.pause_event.is_set():
+                    time.sleep(1)
+                    continue
                 
                 # Only run cleanup if needed and no other processing is happening
                 if self.should_run_cleanup() and not self.context.get('is_processing', False):
