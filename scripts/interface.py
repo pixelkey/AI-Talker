@@ -16,6 +16,7 @@ from speech_recognition_utils import SpeechRecognizer
 from self_reflection import SelfReflection
 from queue import Queue
 from datetime import datetime
+from memory_cleanup import MemoryCleanupManager
 
 def setup_gradio_interface(context):
     """
@@ -58,6 +59,11 @@ def setup_gradio_interface(context):
     
     # Initialize self reflection
     self_reflection = SelfReflection(context)
+    
+    # Initialize memory cleanup manager
+    memory_cleanup = MemoryCleanupManager(context)
+    context['memory_cleanup'] = memory_cleanup
+    memory_cleanup.start_cleanup_thread()
     
     # Create the watcher but don't start it yet - we'll manually trigger updates
     watcher = IngestWatcher(embedding_updater.update_embeddings)
