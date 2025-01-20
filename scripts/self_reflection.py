@@ -28,7 +28,6 @@ class SelfReflection:
         # Initialize history manager
         from self_reflection_history import SelfReflectionHistoryManager
         self.history_manager = SelfReflectionHistoryManager()
-        self.history_manager.start_new_session()
         context['history_manager'] = self.history_manager  # Add to context for other components
         
         self.embedding_updater = context['embedding_updater']
@@ -42,25 +41,25 @@ class SelfReflection:
         
         # Memory processing prompts
         self.memory_prompts = {
-            'long_term': """Extract only the significant, factual information from this conversation that would be valuable for future reference.
+            'long_term': """Extract meaningful information from this conversation that would be valuable for future interactions.
 Focus on:
-- Concrete facts learned about the user (preferences, relationships, important details)
-- Specific decisions or commitments made
-- Key topics that were meaningfully discussed
+- Personal preferences and interests
+- Important facts or knowledge shared
+- Significant opinions or views expressed
 
-Be concise and only include information that was actually mentioned. Do not add assumptions, formatting, or placeholder text.""",
+Create natural, contextual statements that capture the essence of what was shared.""",
             
-            'mid_term': """Extract the key actionable information from this conversation.
+            'mid_term': """Extract information from this conversation that affects future interactions.
 Focus on:
-- Specific tasks or follow-ups needed
-- Important context that affects future interactions
-- Key topics that were meaningfully discussed
+- Preferences that influence our conversation
+- Context that shapes understanding
+- Important details that guide interactions
 
-Be concise and only include information that was actually mentioned. Skip any topics where nothing substantial was discussed.""",
+Create natural statements that preserve the meaning and relevance.""",
             
-            'short_term': """Extract only the essential information needed for immediate context.
-Focus on the most important piece of information learned or discussed.
-Be concise and skip any topics where nothing substantial was mentioned."""
+            'short_term': """Extract the most significant piece of information from this conversation.
+Focus on what matters most for maintaining context and understanding.
+Create a natural statement that captures the key insight."""
         }
 
         # Simple prompt focused on getting a single numerical score
@@ -175,16 +174,21 @@ Be concise and skip any topics where nothing substantial was mentioned."""
                 'memory_type': memory_type,
                 'expiry_date': expiry.isoformat() if expiry else None,
                 'surprise_score': surprise_score,
-                'memory_content': memory_data,
-                'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat(),
-                'original_text': self._format_history(current_exchange)
+                'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
             }
 
             # Save reflection with metadata
-            self.history_manager.add_reflection(conversation_text, context=metadata)
-
-            # Add to embeddings if we have memory content
             if memory_data:
+                metadata = {
+                    'memory_type': memory_type,
+                    'expiry_date': expiry.isoformat() if expiry else None,
+                    'surprise_score': surprise_score,
+                    'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                }
+                
+                # Save to history manager
+                self.history_manager.add_reflection(memory_data, context=metadata)
+
                 # Create a Document object for the memory
                 memory_doc = Document(
                     page_content=memory_data,
