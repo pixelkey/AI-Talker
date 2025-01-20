@@ -63,14 +63,26 @@ Create a natural statement that captures the key insight."""
         }
 
         # Simple prompt focused on getting a single numerical score
-        self.surprise_score_prompt = (
-            "Rate how surprising and memorable this conversation is on a scale from 0.0 to 1.0.\n"
-            "Consider:\n"
-            "- How unexpected or novel was the interaction?\n"
-            "- Was important or unique information shared?\n"
-            "- Was there significant emotional content?\n\n"
-            "Respond with ONLY a number between 0.0 and 1.0. For example: 0.7"
-        )
+        self.surprise_score_prompt = """Rate how significant or surprising the information in this conversation is on a scale from 0.0 to 1.0.
+
+Consider these factors for high scores (0.8-1.0):
+- Learning someone's name or identity for the first time
+- Personal preferences or strong opinions
+- Important facts about the person
+- Significant life events or experiences
+- Key decisions or commitments made
+
+Consider these factors for medium scores (0.5-0.7):
+- Updates to previously known information
+- General interests or casual preferences
+- Day-to-day activities or plans
+
+Consider these factors for low scores (0.0-0.4):
+- Small talk without new information
+- Repetition of known information
+- Greetings without substance
+
+Respond with only a number between 0.0 and 1.0."""
 
         # Separate prompt for reasoning (optional, only if score is high)
         self.reasoning_prompt = (
