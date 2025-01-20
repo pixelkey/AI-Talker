@@ -6,11 +6,15 @@ from datetime import datetime
 import pytz
 from typing import Optional
 import traceback
+import os
+from pathlib import Path
+import json
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 class MemoryCleanupManager:
-    def __init__(self, context, cleanup_interval: int = 3600):  # Default interval: 1 hour
+    def __init__(self, context, cleanup_interval: int = 3600):  
         """Initialize the memory cleanup manager.
         
         Args:
@@ -23,6 +27,19 @@ class MemoryCleanupManager:
         self.stop_cleanup = threading.Event()
         self.is_cleaning = False
         self.last_cleanup_time = None
+        
+        # Setup logging directory
+        self.log_dir = Path(self.context.get('base_dir', '.')) / 'logs' / 'memory_cleanup'
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Configure file handler for cleanup logs
+        cleanup_log_file = self.log_dir / 'memory_cleanup.log'
+        file_handler = logging.FileHandler(cleanup_log_file)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s'
+        ))
+        logger.addHandler(file_handler)
+        logger.setLevel(logging.INFO)
 
         # Prompt for evaluating memory usefulness
         self.usefulness_prompt = """Evaluate if this memory contains useful information worth retaining.
@@ -85,7 +102,48 @@ class MemoryCleanupManager:
             logger.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
             return None
 
-    def _evaluate_memory_usefulness(self, memory_content: str) -> bool:
+    def _log_cleanup_details(self, removed_docs, evaluation_results):
+        """Log detailed cleanup information to a JSON file"""
+        try:
+            timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+            log_file = self.log_dir / f'cleanup_details_{timestamp}.json'
+            
+            cleanup_data = {
+                'timestamp': timestamp,
+                'total_removed': len(removed_docs),
+                'removed_documents': removed_docs,
+                'evaluation_results': evaluation_results
+            }
+            
+            with open(log_file, 'w') as f:
+                json.dump(cleanup_data, f, indent=2)
+            
+            logger.info(f"Detailed cleanup log saved to {log_file}")
+            
+            # Also maintain a summary file
+            summary_file = self.log_dir / 'cleanup_summary.json'
+            try:
+                with open(summary_file, 'r') as f:
+                    summary = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                summary = {'cleanups': []}
+            
+            summary['cleanups'].append({
+                'timestamp': timestamp,
+                'docs_removed': len(removed_docs),
+                'log_file': str(log_file.name)
+            })
+            
+            # Keep only last 100 entries
+            summary['cleanups'] = summary['cleanups'][-100:]
+            
+            with open(summary_file, 'w') as f:
+                json.dump(summary, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Error logging cleanup details: {str(e)}")
+
+    def _evaluate_memory_usefulness(self, memory_content: str) -> tuple[bool, str]:
         """Use LLM to evaluate if a memory is worth keeping"""
         try:
             # Create a simplified context for LLM
@@ -112,16 +170,15 @@ class MemoryCleanupManager:
             result = response['message']['content'].strip().upper()
             keep_memory = 'KEEP: YES' in result
             
-            # Log the decision and reason
             reason_match = re.search(r'REASON:\s*(.+?)(?:\n|$)', result)
             reason = reason_match.group(1) if reason_match else "No reason provided"
             logger.debug(f"Memory evaluation - Keep: {keep_memory}, Reason: {reason}")
             
-            return keep_memory
+            return keep_memory, reason
             
         except Exception as e:
             logger.error(f"Error evaluating memory usefulness: {str(e)}")
-            return True  # Keep memory if evaluation fails
+            return True, f"Error during evaluation: {str(e)}"
 
     def _cleanup_expired_memories(self) -> None:
         """Remove expired memories from the vector store and save changes"""
@@ -138,15 +195,18 @@ class MemoryCleanupManager:
                 logger.error("Could not get current time")
                 return
 
-            # Get all documents from vector store
+            logger.info(f"Starting memory cleanup at {current_time}")
+            
             all_docs = vector_store.docstore.docs
             docs_to_remove = []
-            indices_to_remove = []  # Track FAISS indices to remove
+            indices_to_remove = []
+            evaluation_results = {}  # Track evaluation results for logging
 
             # Check each document for expiry and usefulness
             for doc_id, doc in all_docs.items():
                 try:
                     should_remove = False
+                    removal_reason = None
                     expiry_date = doc.metadata.get('expiry_date')
                     
                     # Check if expired
@@ -154,21 +214,30 @@ class MemoryCleanupManager:
                         expiry_datetime = self._parse_timestamp(expiry_date)
                         if expiry_datetime and expiry_datetime <= current_time:
                             should_remove = True
+                            removal_reason = f"Expired (expiry: {expiry_date})"
                             
                     # If not expired or no expiry, check usefulness if it's not a long-term memory
                     if not should_remove and doc.metadata.get('type') != 'long_term':
-                        if not self._evaluate_memory_usefulness(doc.page_content):
+                        keep_memory, reason = self._evaluate_memory_usefulness(doc.page_content)
+                        if not keep_memory:
                             should_remove = True
-                            logger.info(f"Marking document for removal due to low usefulness: {doc_id}")
+                            removal_reason = f"Low usefulness: {reason}"
                     
                     if should_remove:
                         docs_to_remove.append(doc_id)
-                        # Get the index in the FAISS store
                         if hasattr(vector_store, 'index_to_docstore_id'):
                             for i, stored_id in enumerate(vector_store.index_to_docstore_id):
                                 if stored_id == doc_id:
                                     indices_to_remove.append(i)
-                        logger.info(f"Marking document for removal: {doc_id}")
+                        
+                        # Store evaluation results for logging
+                        evaluation_results[doc_id] = {
+                            'content': doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
+                            'metadata': doc.metadata,
+                            'removal_reason': removal_reason
+                        }
+                        
+                        logger.info(f"Marking document for removal: {doc_id} - {removal_reason}")
                         
                 except Exception as e:
                     logger.error(f"Error processing document {doc_id}: {str(e)}")
@@ -176,20 +245,17 @@ class MemoryCleanupManager:
 
             # Remove expired documents if any found
             if docs_to_remove:
-                logger.info(f"Removing {len(docs_to_remove)} expired documents")
+                logger.info(f"Removing {len(docs_to_remove)} documents")
                 try:
-                    # Remove from docstore
+                    # Remove from docstore and FAISS index
                     for doc_id in docs_to_remove:
                         if doc_id in vector_store.docstore.docs:
                             del vector_store.docstore.docs[doc_id]
                     
-                    # Remove from FAISS index if indices found
                     if indices_to_remove and hasattr(vector_store, 'index'):
-                        # Sort in descending order to remove from end first
                         indices_to_remove.sort(reverse=True)
                         for idx in indices_to_remove:
                             vector_store.index = vector_store._remove_vectors([idx], vector_store.index)
-                            # Update the index mapping
                             if hasattr(vector_store, 'index_to_docstore_id'):
                                 del vector_store.index_to_docstore_id[idx]
                     
@@ -202,12 +268,19 @@ class MemoryCleanupManager:
                         self.context.get('embeddings_dir', 'embeddings')
                     )
                     
+                    # Log cleanup details
+                    self._log_cleanup_details(evaluation_results, {
+                        'total_docs': len(all_docs),
+                        'docs_removed': len(docs_to_remove),
+                        'cleanup_time': current_time.isoformat()
+                    })
+                    
                     logger.info("Memory cleanup completed and saved to disk")
                 except Exception as e:
                     logger.error(f"Error during document removal: {str(e)}")
                     logger.error(traceback.format_exc())
             else:
-                logger.info("No expired memories found")
+                logger.info("No documents to remove")
 
             self.last_cleanup_time = current_time
 
