@@ -42,30 +42,31 @@ class MemoryCleanupManager:
         logger.setLevel(logging.INFO)
 
         # Prompt for evaluating memory usefulness
-        self.usefulness_prompt = """Evaluate if this memory contains useful information worth retaining.
-
-        A memory is NOT useful if it:
-        1. Contains error messages or failed attempts (e.g., "unable to find...", "failed to...")
-        2. Is purely procedural without content (e.g., "processing request...", "searching...")
-        3. Contains no actual information (e.g., "no relevant information found")
-        4. Is redundant or trivial
-        5. Is a temporary status update
-        6. Contains no meaningful context or insights
-
-        A memory IS useful if it:
-        1. Contains specific facts, knowledge, or insights
-        2. Includes personal preferences or important details
-        3. Has context that helps understand the user or conversation
-        4. Contains meaningful search results or findings
-        5. Includes decisions or conclusions
-        6. Has time-sensitive but important information
+        self.usefulness_prompt = """Evaluate if this memory should be REMOVED. A memory should be REMOVED only if it matches ALL these criteria:
+        1. Contains NO specific facts, knowledge, or insights
+        2. Contains NO personal preferences or important details
+        3. Has NO context that helps understand the user or conversation
+        4. Contains NO meaningful content
+        5. Is purely procedural or a status message
+        6. Is just an error message or failed attempt
 
         Memory to evaluate:
         {memory_content}
 
-        Respond in this format only:
-        KEEP: [YES/NO]
-        REASON: [brief explanation]"""
+        First, identify if the memory contains any useful information from the criteria above.
+        Then respond in this format only:
+        REMOVE: [YES/NO]
+        REASON: [brief explanation]
+
+        Example of memory that should be REMOVED:
+        "Processing request... please wait"
+        REMOVE: YES
+        REASON: purely procedural status message with no content
+
+        Example of memory to KEEP:
+        "User enjoys atmospheric games like The Witcher"
+        REMOVE: NO
+        REASON: contains personal preference and useful context about user's interests"""
 
     def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
         """Parse timestamp with flexible format handling"""
@@ -146,7 +147,6 @@ class MemoryCleanupManager:
     def _evaluate_memory_usefulness(self, memory_content: str) -> tuple[bool, str]:
         """Use LLM to evaluate if a memory is worth keeping"""
         try:
-            # Create a simplified context for LLM
             temp_context = {
                 'client': self.context['client'],
                 'MODEL_SOURCE': self.context.get('MODEL_SOURCE', 'local'),
@@ -155,10 +155,8 @@ class MemoryCleanupManager:
                 'LLM_MODEL': self.context.get('LLM_MODEL', 'mistral')
             }
             
-            # Format prompt with memory content
             prompt = self.usefulness_prompt.format(memory_content=memory_content)
             
-            # Get evaluation from LLM
             response = temp_context['client'].chat(
                 model=temp_context['LLM_MODEL'],
                 messages=[
@@ -168,17 +166,24 @@ class MemoryCleanupManager:
             )
             
             result = response['message']['content'].strip().upper()
-            keep_memory = 'KEEP: YES' in result
+            should_remove = 'REMOVE: YES' in result
             
             reason_match = re.search(r'REASON:\s*(.+?)(?:\n|$)', result)
             reason = reason_match.group(1) if reason_match else "No reason provided"
-            logger.debug(f"Memory evaluation - Keep: {keep_memory}, Reason: {reason}")
             
-            return keep_memory, reason
+            # For safety, if the reason mentions useful information, override to keep
+            useful_indicators = ['specific fact', 'knowledge', 'insight', 'personal', 'context', 'useful', 'meaningful']
+            if any(indicator in reason.lower() for indicator in useful_indicators):
+                should_remove = False
+                reason = f"Override - useful content detected: {reason}"
+            
+            logger.debug(f"Memory evaluation - Remove: {should_remove}, Reason: {reason}")
+            
+            return should_remove, reason
             
         except Exception as e:
             logger.error(f"Error evaluating memory usefulness: {str(e)}")
-            return True, f"Error during evaluation: {str(e)}"
+            return False, f"Error during evaluation: {str(e)}"  # Keep memory if evaluation fails
 
     def _cleanup_expired_memories(self) -> None:
         """Remove expired memories from the vector store and save changes"""
@@ -220,10 +225,9 @@ class MemoryCleanupManager:
                             
                     # If not expired or no expiry, check usefulness if it's not a long-term memory
                     if not should_remove and doc.metadata.get('type') != 'long_term':
-                        keep_memory, reason = self._evaluate_memory_usefulness(doc.page_content)
-                        if not keep_memory:
-                            should_remove = True
-                            removal_reason = f"Low usefulness: {reason}"
+                        should_remove, reason = self._evaluate_memory_usefulness(doc.page_content)
+                        if should_remove:
+                            removal_reason = f"Removing: {reason}"
                     
                     if should_remove:
                         docs_to_remove.append(doc_id)
@@ -263,12 +267,15 @@ class MemoryCleanupManager:
                                 del vector_store.index_to_docstore_id[idx]
                     
                     # Save changes to disk
+                    embeddings_dir = self.context.get('embeddings_dir', 'embeddings')
                     from faiss_utils import save_faiss_index_metadata_and_docstore
                     save_faiss_index_metadata_and_docstore(
                         vector_store.index,
                         vector_store.docstore,
                         vector_store.index_to_docstore_id,
-                        self.context.get('embeddings_dir', 'embeddings')
+                        embeddings_dir,
+                        str(Path(embeddings_dir) / 'metadata.json'),
+                        str(Path(embeddings_dir) / 'docstore.pkl')
                     )
                     
                     # Log cleanup details
