@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 import pytz
 import re
+from langchain.docstore.document import Document  # Fix import path for Document class
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -36,10 +37,35 @@ class SelfReflection:
             'mid_term': 30,     # 30 days
             'short_term': 7     # 7 days
         }
+        
+        # Memory processing prompts
+        self.memory_prompts = {
+            'long_term': """Analyze this conversation and create a detailed memory entry that will help with future retrieval.
+Include:
+1. A detailed summary of key information learned (facts, preferences, relationships)
+2. Important decisions or commitments made
+3. Main topics and themes discussed
+4. Key entities or names mentioned
+5. Any emotional significance or personal impact
 
-        self.surprise_thresholds = {
-            'high': 0.8,   # Score >= 0.8 goes to long-term
-            'medium': 0.5  # Score >= 0.5 goes to mid-term, below goes to short-term
+Focus on including details that would make this memory relevant when searching for similar topics or contexts in the future.""",
+            
+            'mid_term': """Create a focused memory entry for this conversation that captures its relevance.
+Include:
+1. A clear summary of the main points discussed
+2. Key topics and themes
+3. Any action items or follow-ups
+4. Important context that would help find this memory when relevant
+
+Focus on information that would make this conversation findable when discussing similar topics.""",
+            
+            'short_term': """Create a brief but informative memory entry.
+Include:
+1. A concise summary of what was discussed
+2. The main topic or theme
+3. Key context that would make this memory findable
+
+Keep it brief but include enough detail to make it retrievable when relevant."""
         }
 
         # Simple prompt focused on getting a single numerical score
@@ -56,6 +82,13 @@ class SelfReflection:
         self.reasoning_prompt = (
             "Explain in one short sentence why this conversation received a score of {score}."
         )
+
+        # Surprise thresholds
+        self.surprise_thresholds = {
+            'high': 0.8,   # Score >= 0.8 goes to long-term
+            'medium': 0.5,  # Score >= 0.5 goes to mid-term, below goes to short-term
+            'low': 0.2     # Score >= 0.2 is considered for memory processing
+        }
 
     def _extract_score(self, response: str) -> float:
         """Extract numerical score from LLM response"""
@@ -124,30 +157,61 @@ class SelfReflection:
             # Step 1: Get surprise score
             score_response = self._get_llm_response(self.surprise_score_prompt, conversation_text)
             surprise_score = self._extract_score(score_response)
+            logger.info(f"Extracted surprise score: {surprise_score}")
             
-            # Step 2: Get reasoning if score is high enough
-            reasoning = ""
-            if surprise_score >= self.surprise_thresholds['medium']:
-                reasoning_prompt = self.reasoning_prompt.format(score=surprise_score)
-                reasoning = self._get_llm_response(reasoning_prompt, conversation_text)
-
             # Determine memory type and expiry
             memory_type, expiry = self._determine_memory_type(surprise_score)
+            logger.info(f"Determined memory type: {memory_type}, expiry: {expiry}")
+            
+            # Step 2: Process memory if score warrants retention
+            memory_data = None
+            if surprise_score >= self.surprise_thresholds['low']:
+                logger.info(f"Score {surprise_score} >= threshold {self.surprise_thresholds['low']}, processing memory")
+                # Get memory processing prompt based on type
+                memory_prompt = self.memory_prompts[memory_type]
+                logger.info(f"Using {memory_type} memory prompt")
+                memory_data = self._get_llm_response(memory_prompt, conversation_text)
+                logger.info(f"Generated memory: {memory_data[:200]}...")
+            else:
+                logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
+
+            # Prepare metadata
+            metadata = {
+                'memory_type': memory_type,
+                'expiry_date': expiry.isoformat() if expiry else None,
+                'surprise_score': surprise_score,
+                'memory_content': memory_data,
+                'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat(),
+                'original_text': self._format_history(current_exchange)
+            }
 
             # Save reflection with metadata
-            self.history_manager.add_reflection(
-                conversation_text,  # Store the actual conversation
-                context={
-                    'memory_type': memory_type,
-                    'expiry_date': expiry.isoformat() if expiry else None,
-                    'surprise_score': surprise_score,
-                    'reasoning': reasoning,
-                    'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat(),
-                    'original_text': self._format_history(current_exchange)  # Store original for reference
-                }
-            )
+            self.history_manager.add_reflection(conversation_text, context=metadata)
 
-            logger.info(f"Processed conversation: memory_type={memory_type}, score={surprise_score}")
+            # Add to embeddings if we have memory content
+            if memory_data:
+                # Create a Document object for the memory
+                memory_doc = Document(
+                    page_content=memory_data,
+                    metadata={
+                        'source': 'memory',
+                        'type': memory_type,
+                        'expiry_date': metadata['expiry_date'],
+                        'surprise_score': surprise_score,
+                        'timestamp': metadata['timestamp'],
+                        'content_type': 'conversation_memory'
+                    }
+                )
+                
+                # Add to vector store using existing infrastructure
+                vector_store = self.context.get('vector_store')
+                if vector_store:
+                    vector_store.add_documents([memory_doc])
+                    logger.info(f"Added memory to embeddings with metadata: {memory_doc.metadata}")
+                else:
+                    logger.error("Vector store not found in context")
+
+            logger.info(f"Processed conversation: memory_type={memory_type}, score={surprise_score}, memory_length={len(memory_data) if memory_data else 0}")
 
         except Exception as e:
             logger.error(f"Error in conversation processing: {e}")
