@@ -49,6 +49,10 @@ def initialize_model_and_retrieval():
     # Setup vector store
     vector_store = setup_vector_store(embeddings)
 
+    # Initialize DuckDuckGo search
+    from duckduckgo_search import DDGS
+    ddgs = DDGS()
+
     # Prepare and return the context
     context = {
         "client": client,
@@ -63,5 +67,6 @@ def initialize_model_and_retrieval():
         "SIMILARITY_THRESHOLD": config.SIMILARITY_THRESHOLD,
         "TOP_SIMILARITY_RESULTS": config.TOP_SIMILARITY_RESULTS,
         "MODEL_SOURCE": config.MODEL_SOURCE,
+        "ddgs": ddgs,  # Add DuckDuckGo search instance
     }
     return context

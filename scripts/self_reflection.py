@@ -84,6 +84,7 @@ Consider these factors for low scores (0.0-0.4):
 - Repetition of known information
 - Greetings without substance
 - If the information is already known in the context
+- If a web search failed or the information was not found
 
 Remember: Names and identity information are especially important for maintaining conversation context.
 Respond with only a number between 0.0 and 1.0."""
@@ -155,7 +156,7 @@ Respond with only a number between 0.0 and 1.0."""
 
     def _evaluate_web_search_need(self, conversation_text: str) -> Tuple[bool, str]:
         """Evaluate if web search is needed and generate search query"""
-        from scripts.CognitiveProcessing import determine_and_perform_web_search
+        from CognitiveProcessing import determine_and_perform_web_search
         
         prompt = """Analyze this conversation and determine if it requires fact-checking or additional information from the web.
 Consider:
@@ -184,7 +185,8 @@ REASON: [brief explanation]"""
             if search_needed and query:
                 # Use existing determine_and_perform_web_search to validate need
                 rag_summary = ""  # We don't have RAG context here
-                search_needed = determine_and_perform_web_search(query, rag_summary, self.context)[0]
+                result = determine_and_perform_web_search(query, rag_summary, self.context)
+                search_needed = result.get("needs_web_search", False)
                 
             logger.info(f"Web search evaluation - needed: {search_needed}, query: {query}")
             return search_needed, query
@@ -192,34 +194,6 @@ REASON: [brief explanation]"""
         except Exception as e:
             logger.error(f"Error evaluating web search need: {e}")
             return False, None
-
-    def _process_web_search_results(self, query: str, results: str) -> Tuple[str, str]:
-        """Process web search results and determine memory type"""
-        prompt = """Analyze these search results and create a concise summary of the relevant information.
-Consider the type of information:
-- Current events/news (short-term: days/weeks)
-- Temporary facts (mid-term: weeks/months)
-- Lasting knowledge (long-term: months/years)
-
-Format your response as:
-MEMORY_TYPE: [short_term/mid_term/long_term]
-REASON: [why this type was chosen]
-SUMMARY: [concise summary of relevant information]"""
-
-        try:
-            response = self._get_llm_response(prompt, f"Query: {query}\n\nResults: {results}")
-            
-            # Parse response
-            memory_type = re.search(r'MEMORY_TYPE: (.+?)(?=\n|$)', response).group(1).strip()
-            summary_match = re.search(r'SUMMARY: (.+?)(?=\n|$)', response, re.DOTALL)
-            summary = summary_match.group(1).strip() if summary_match else ""
-            
-            logger.info(f"Processed web results - type: {memory_type}, summary length: {len(summary)}")
-            return memory_type, summary
-            
-        except Exception as e:
-            logger.error(f"Error processing web search results: {e}")
-            return "short_term", ""
 
     def process_conversation(self, current_exchange: List[Tuple[str, str]]) -> None:
         """Process a conversation exchange and generate reflection"""
@@ -239,7 +213,7 @@ SUMMARY: [concise summary of relevant information]"""
             web_memory = None
             
             if search_needed and search_query:
-                from scripts.CognitiveProcessing import perform_web_search, get_detailed_web_content
+                from CognitiveProcessing import perform_web_search, get_detailed_web_content
                 
                 logger.info(f"Performing web search for: {search_query}")
                 # Use existing web search infrastructure

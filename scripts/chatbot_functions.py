@@ -19,10 +19,6 @@ def retrieve_and_format_references(input_text: str, context: Dict) -> Tuple[str,
     Returns:
         Tuple: references, filtered_docs, and context_documents.
     """
-    # Skip if web search is disabled
-    if context.get('skip_web_search', False):
-        return "", [], ""
-        
     # Normalize the user's input text
     normalized_input = normalize_text(input_text)
     logging.info(f"Normalized input: {normalized_input}")
@@ -69,7 +65,7 @@ def chatbot_response(input_text, context_documents, context, history):
         formatted_history = f"Conversation History:\n{formatted_history}\n"
     
     # Check if web search is needed based on RAG results
-    web_search_results = {"needs_web_search": False, "web_results": ""} if context.get('skip_web_search', False) else determine_and_perform_web_search(input_text, context_documents or "", context)
+    web_search_results = determine_and_perform_web_search(input_text, context_documents or "", context)
     
     # Initialize final references and context
     final_references = []

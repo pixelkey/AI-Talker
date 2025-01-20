@@ -1057,10 +1057,14 @@ SEARCH_QUERY: new york weather forecast"""
         if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
-            # Create DDGS instance
-            with DDGS() as ddgs:
-                search_results = perform_web_search(search_query, ddgs)
-                
+            # Get DDGS instance from context
+            ddgs = context.get('ddgs')
+            if not ddgs:
+                # Create new instance if not in context
+                ddgs = DDGS()
+            
+            search_results = perform_web_search(search_query, ddgs)
+            
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
             # Initialize filtered results
