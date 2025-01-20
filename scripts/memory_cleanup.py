@@ -267,15 +267,23 @@ class MemoryCleanupManager:
                                 del vector_store.index_to_docstore_id[idx]
                     
                     # Save changes to disk
-                    embeddings_dir = self.context.get('embeddings_dir', 'embeddings')
+                    embeddings_dir = Path(self.context.get('embeddings_dir', 'embeddings'))
+                    faiss_path = str(embeddings_dir / 'index.faiss')
+                    metadata_path = str(embeddings_dir / 'metadata.json')
+                    docstore_path = str(embeddings_dir / 'docstore.pkl')
+                    
+                    # Ensure directories exist
+                    embeddings_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Save using the utility function
                     from faiss_utils import save_faiss_index_metadata_and_docstore
                     save_faiss_index_metadata_and_docstore(
-                        vector_store.index,
-                        vector_store.docstore,
-                        vector_store.index_to_docstore_id,
-                        embeddings_dir,
-                        str(Path(embeddings_dir) / 'metadata.json'),
-                        str(Path(embeddings_dir) / 'docstore.pkl')
+                        faiss_index=vector_store.index,
+                        metadata=vector_store.index_to_docstore_id,
+                        docstore=vector_store.docstore,
+                        faiss_index_path=faiss_path,
+                        metadata_path=metadata_path,
+                        docstore_path=docstore_path
                     )
                     
                     # Log cleanup details

@@ -18,7 +18,8 @@ def save_faiss_index_metadata_and_docstore(
     try:
         # Ensure parent directories exist
         for path in [faiss_index_path, metadata_path, docstore_path]:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if path:  # Only create dirs if path is not empty
+                os.makedirs(os.path.dirname(path), exist_ok=True)
             
         # Save to temporary files first
         temp_faiss = faiss_index_path + ".tmp"
