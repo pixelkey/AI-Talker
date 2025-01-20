@@ -1,16 +1,13 @@
 import threading
 import time
 import logging
-import subprocess
 import json
-from queue import Queue
-from chatbot_functions import retrieve_and_format_references, chatbot_response, determine_and_perform_web_search
-import gradio as gr
+from queue import Queue, Empty
+from chatbot_functions import chatbot_response
 from typing import Optional, Dict, Any, List, Tuple
-from gpu_utils import is_gpu_too_hot
-from self_reflection_history import SelfReflectionHistoryManager
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,191 +21,219 @@ class SelfReflection:
         self.stop_reflection = threading.Event()
         self.user_input_queue = Queue()
         self.is_reflecting = False
+        
+        # Initialize history manager
+        from self_reflection_history import SelfReflectionHistoryManager
         self.history_manager = SelfReflectionHistoryManager()
         self.history_manager.start_new_session()
+        context['history_manager'] = self.history_manager  # Add to context for other components
+        
         self.embedding_updater = context['embedding_updater']
-        self.tts_manager = context.get('tts_manager')  # Get TTS manager from context
-        self.reflection_system_prompt = (
-            "You are an AI system focused on continuous learning and adaptation through conversation analysis. "
-            "Generate concise, actionable insights about your own learning and improvement while following these guidelines:\n\n"
-            "1. My Knowledge Enhancement:\n"
-            "   - What I learned from this conversation\n"
-            "   - Topics I need to research further\n"
-            "   - How this connects to my existing knowledge\n\n"
-            "2. User Interaction Analysis:\n"
-            "   - What topics interest the user\n"
-            "   - How they prefer to receive information\n"
-            "   - Their apparent expertise level\n\n"
-            "3. My Response Quality:\n"
-            "   - How accurate and relevant was my response\n"
-            "   - What information was I missing\n"
-            "   - How effective was my search strategy\n\n"
-            "4. My Improvement Plan:\n"
-            "   - Specific actions I will take to enhance my knowledge\n"
-            "   - Topics I need to research\n"
-            "   - How I will measure my improvement\n\n"
-            "Keep reflections under 100 words. Focus on my learning and adaptation."
+
+        # Memory expiry settings (in days)
+        self.memory_expiry = {
+            'long_term': None,  # Never expires
+            'mid_term': 30,     # 30 days
+            'short_term': 7     # 7 days
+        }
+
+        self.surprise_thresholds = {
+            'high': 0.8,   # Score >= 0.8 goes to long-term
+            'medium': 0.5  # Score >= 0.5 goes to mid-term, below goes to short-term
+        }
+
+        # Simple prompt focused on getting a single numerical score
+        self.surprise_score_prompt = (
+            "Rate how surprising and memorable this conversation is on a scale from 0.0 to 1.0.\n"
+            "Consider:\n"
+            "- How unexpected or novel was the interaction?\n"
+            "- Was important or unique information shared?\n"
+            "- Was there significant emotional content?\n\n"
+            "Respond with ONLY a number between 0.0 and 1.0. For example: 0.7"
         )
-        logger.info("SelfReflection initialized")
 
-    def start_reflection(self, messages, update_ui_callback):
-        """
-        Start the reflection process on recent messages.
+        # Separate prompt for reasoning (optional, only if score is high)
+        self.reasoning_prompt = (
+            "Explain in one short sentence why this conversation received a score of {score}."
+        )
+
+    def _extract_score(self, response: str) -> float:
+        """Extract numerical score from LLM response"""
+        try:
+            # Clean the response and extract the first number
+            response = response.strip()
+            # Look for a decimal number between 0 and 1
+            import re
+            matches = re.findall(r'0?\.[0-9]+', response)
+            if matches:
+                score = float(matches[0])
+                return min(max(score, 0.0), 1.0)  # Clamp between 0 and 1
+            return 0.0
+        except Exception as e:
+            logger.error(f"Error extracting score: {e}")
+            return 0.0
+
+    def _determine_memory_type(self, surprise_score: float) -> Tuple[str, Optional[datetime]]:
+        """Determine memory type and expiry based on surprise score"""
+        current_time = datetime.now(pytz.timezone('Australia/Adelaide'))
         
-        Args:
-            messages: List of recent messages to reflect on
-            update_ui_callback: Callback to update the UI with reflection progress
-        """
-        if self.is_reflecting:
-            logger.info("Already reflecting, skipping new reflection")
-            return
+        if surprise_score >= self.surprise_thresholds['high']:
+            return 'long_term', None
+        elif surprise_score >= self.surprise_thresholds['medium']:
+            expiry = current_time + timedelta(days=self.memory_expiry['mid_term'])
+            return 'mid_term', expiry
+        else:
+            expiry = current_time + timedelta(days=self.memory_expiry['short_term'])
+            return 'short_term', expiry
+
+    def _get_llm_response(self, prompt: str, conversation_text: str) -> str:
+        """Get a direct response from the LLM without emotion processing"""
+        try:
+            # Create a simplified context without TTS/emotion
+            temp_context = {
+                'client': self.context['client'],
+                'MODEL_SOURCE': self.context.get('MODEL_SOURCE', 'local'),
+                'skip_web_search': True,
+                'skip_emotion': True,  # Skip emotion processing
+                'system_prompt': prompt,
+                'LLM_MODEL': self.context.get('LLM_MODEL', 'mistral')  # Use the configured model
+            }
             
-        # Wait for TTS to finish if it's processing
-        if self.tts_manager and self.tts_manager.is_processing:
-            logger.info("Waiting for TTS to finish processing before starting reflection...")
-            while self.tts_manager.is_processing:
-                time.sleep(0.5)  # Short sleep to prevent busy waiting
-                if self.stop_reflection.is_set():
-                    logger.info("Stop signal received while waiting for TTS")
-                    return
-            logger.info("TTS processing finished, starting reflection...")
+            # Get direct response from LLM
+            response = temp_context['client'].chat(
+                model=temp_context['LLM_MODEL'],
+                messages=[
+                    {'role': 'system', 'content': prompt},
+                    {'role': 'user', 'content': conversation_text}
+                ]
+            )
+            return response['message']['content'].strip()
             
-        # Clear previous user input signals
-        while not self.user_input_queue.empty():
-            self.user_input_queue.get()
+        except Exception as e:
+            logger.error(f"Error getting LLM response: {e}")
+            raise
+
+    def process_conversation(self, current_exchange: List[Tuple[str, str]]) -> None:
+        """Process a conversation exchange and generate reflection"""
+        try:
+            logger.info("Starting conversation processing")
             
-        # Reset stop signal
-        self.stop_reflection.clear()
-        
-        # Get recent conversation context
-        current_exchange = messages[-1:]
-        
-        def reflection_loop():
-            try:
-                reflection_count = 0
-                reflection_history = []
-                max_reflections = 1 # Limit reflections for efficiency
-                
-                while not self.stop_reflection.is_set() and reflection_count < max_reflections:
-                    # Check system resources and TTS status
-                    if is_gpu_too_hot():
-                        logger.warning("GPU temperature too high, pausing reflection")
-                        break
+            # Format conversation history
+            conversation_text = self._format_history(current_exchange)
+            
+            # Step 1: Get surprise score
+            score_response = self._get_llm_response(self.surprise_score_prompt, conversation_text)
+            surprise_score = self._extract_score(score_response)
+            
+            # Step 2: Get reasoning if score is high enough
+            reasoning = ""
+            if surprise_score >= self.surprise_thresholds['medium']:
+                reasoning_prompt = self.reasoning_prompt.format(score=surprise_score)
+                reasoning = self._get_llm_response(reasoning_prompt, conversation_text)
 
-                    # Wait if TTS is still processing
-                    if self.tts_manager and self.tts_manager.is_processing:
-                        logger.info("TTS still processing, waiting before reflection")
-                        time.sleep(1)  # Wait a second before checking again
-                        continue
+            # Determine memory type and expiry
+            memory_type, expiry = self._determine_memory_type(surprise_score)
 
-                    if not self.user_input_queue.empty():
-                        logger.info("User input detected, stopping reflection")
-                        break
-                    
-                    # Clear GPU memory before reflection
-                    if self.tts_manager:
-                        self.tts_manager.clear_gpu_memory()
-                    
-                    # Generate focused reflection
-                    logger.info("Generating focused reflection")
-                    temp_context = self.context.copy()
-                    temp_context['system_prompt'] = self.reflection_system_prompt
-                    temp_context['skip_web_search'] = True  # Prevent web searches during reflection
-                    
-                    # Create dynamic reflection prompt
-                    temp_context['skip_web_search'] = True  # Prevent web searches during reflection prompt generation
-                    reflection_prompt = self._create_reflection_prompt(current_exchange, reflection_history)
-                    
-                    # Get relevant context efficiently
-                    refs, filtered_docs, context_documents = retrieve_and_format_references(
-                        reflection_prompt, 
-                        temp_context
-                    )
-                    
-                    # Generate reflection with context
-                    _, reflection, _, _ = chatbot_response(
-                        reflection_prompt,
-                        refs,
-                        temp_context,
-                        current_exchange
-                    )
-                    
-                    logger.info(f"Generated reflection: {reflection[:200]}...")
-                    
-                    if self.stop_reflection.is_set():
-                        logger.info("Stop signal received")
-                        break
-                    
-                    # Format reflection with context
-                    current_conversation = self._format_history(current_exchange)
-                    full_reflection = f"Reflection #{reflection_count + 1}:\n{reflection}\n\nCurrent Conversation:\n{current_conversation}\n\nRelevant Context:\n{refs if refs else 'No additional context found.'}"
-                    
-                    # Save reflection with context and update embeddings
-                    self.history_manager.add_reflection(
-                        reflection,
-                        context={
-                            "references": refs,
-                            "prompt": reflection_prompt,
-                            "reflection_number": reflection_count + 1,
-                            "timestamp": self._parse_timestamp(datetime.now(pytz.timezone('Australia/Adelaide')).isoformat())
-                        }
-                    )
-                    
-                    # Update embeddings for the reflection
-                    if self.embedding_updater:
-                        self.embedding_updater.update_embeddings([reflection])
-                    
-                    # Add to reflection history for tracking during this session
-                    reflection_history.append((reflection_prompt, reflection))
-                    
-                    # Update state
-                    current_time = datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
-                    reflection_state = {"last_reflection_time": current_time, "last_reflection": reflection}
-                    
-                    # Update UI if callback provided
-                    try:
-                        if update_ui_callback:
-                            result = update_ui_callback(full_reflection)
-                            logger.info(f"UI update result: {result}")
-                    except Exception as e:
-                        logger.error(f"Error updating UI: {str(e)}", exc_info=True)
-                    
-                    reflection_count += 1
-                    
-                    # Check if further reflection needed
-                    if not self._should_continue_reflecting(messages, reflection_history):
-                        logger.info("Reflection complete, no further insights needed")
-                        break
-                    
-                    # Pause briefly between reflections
-                    time.sleep(1)
-                    
-            except Exception as e:
-                logger.error(f"Error in reflection loop: {str(e)}", exc_info=True)
-            finally:
-                logger.info(f"Reflection loop ended after {reflection_count} reflections")
-                self.is_reflecting = False
+            # Save reflection with metadata
+            self.history_manager.add_reflection(
+                conversation_text,  # Store the actual conversation
+                context={
+                    'memory_type': memory_type,
+                    'expiry_date': expiry.isoformat() if expiry else None,
+                    'surprise_score': surprise_score,
+                    'reasoning': reasoning,
+                    'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat(),
+                    'original_text': self._format_history(current_exchange)  # Store original for reference
+                }
+            )
+
+            logger.info(f"Processed conversation: memory_type={memory_type}, score={surprise_score}")
+
+        except Exception as e:
+            logger.error(f"Error in conversation processing: {e}")
+            raise
+
+    def _clean_message(self, msg: str) -> str:
+        """Clean a message by removing timestamps and extra formatting"""
+        # Remove timestamp pattern [Day, YYYY-MM-DD HH:MM:SS +ZZZZ]
+        msg = re.sub(r'\[[^]]*\]', '', msg)
+        # Remove User/Bot prefix if present
+        msg = re.sub(r'^(User|Bot):\s*', '', msg)
+        return msg.strip()
+
+    def _format_history(self, history: List[Tuple[str, str]]) -> str:
+        """Format conversation history into a readable string."""
+        if not history:  # Handle None or empty history
+            return ""
+            
+        formatted = []
+        for msg in history:
+            # Handle nested list format from interface
+            if isinstance(msg, list):
+                user_msg, bot_msg = msg
+                formatted.extend([
+                    f"User: {self._clean_message(user_msg)}",
+                    f"Bot: {self._clean_message(bot_msg)}"
+                ])
+            # Handle tuple format
+            elif isinstance(msg, tuple):
+                user_msg, bot_msg = msg
+                formatted.extend([
+                    f"User: {self._clean_message(user_msg)}",
+                    f"Bot: {self._clean_message(bot_msg)}"
+                ])
+            # Handle string format
+            else:
+                formatted.append(self._clean_message(msg))
         
-        # Start reflection in separate thread
-        self.is_reflecting = True
-        self.reflection_thread = threading.Thread(target=reflection_loop)
-        self.reflection_thread.daemon = True
-        self.reflection_thread.start()
-        logger.info("Reflection thread started")
+        return "\n".join(formatted)
 
-    def stop_reflection_loop(self):
-        """Stop the self-reflection process"""
-        logger.info("Stopping reflection loop")
-        self.stop_reflection.set()
+    def start_reflection_thread(self) -> None:
+        """Start the reflection thread"""
+        if not self.reflection_thread or not self.reflection_thread.is_alive():
+            self.stop_reflection.clear()
+            self.reflection_thread = threading.Thread(target=self._reflection_loop)
+            self.reflection_thread.start()
+
+    def stop_reflection_thread(self) -> None:
+        """Stop the reflection thread"""
         if self.reflection_thread and self.reflection_thread.is_alive():
-            self.reflection_thread.join(timeout=1)
-        logger.info("Reflection loop stopped")
+            self.stop_reflection.set()
+            self.reflection_thread.join()
+
+    def _reflection_loop(self) -> None:
+        """Main reflection loop"""
+        while not self.stop_reflection.is_set():
+            try:
+                # Get next conversation to process
+                current_exchange = self.user_input_queue.get(timeout=1)
+                
+                # Check for stop signal
+                if current_exchange is None:
+                    continue
+                    
+                self.is_reflecting = True
+                
+                # Process the conversation
+                self.process_conversation(current_exchange)
+                
+            except Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error in reflection loop: {e}")
+            finally:
+                self.is_reflecting = False
+
+    def queue_conversation(self, history: List[Tuple[str, str]]) -> None:
+        """Queue a conversation for reflection"""
+        if history:
+            self.user_input_queue.put(history)
 
     def notify_user_input(self):
         """Notify that user input has been received"""
         logger.info("Notifying about user input")
-        self.user_input_queue.put(True)
-        self.stop_reflection_loop()
+        self.stop_reflection_thread()  # Stop current reflection if any
+        self.user_input_queue.put(None)  # Signal to stop current processing
 
     def get_current_reflections(self):
         """Get current reflections from history manager"""
@@ -231,242 +256,6 @@ class SelfReflection:
         }
         self.history_manager.add_insight(insight_data)
         logger.info(f"Stored new insight in category '{category}': {insight}")
-
-    def _extract_learning_topics(self, conversation):
-        """Extract key topics that would be valuable to learn more about"""
-        try:
-            # Get the user's original query from conversation
-            user_queries = [msg.strip() for msg in conversation if isinstance(msg, str) and "User:" in msg]
-            original_query = user_queries[-1].replace("User:", "").strip() if user_queries else ""
-            
-            # Create a focused prompt for topic extraction
-            prompt = (
-                "Extract 1-3 specific learning topics from this conversation. For each topic:\n"
-                "- Use 2-4 words only\n"
-                "- Focus on concrete concepts\n"
-                "- Avoid general categories\n\n"
-                "Format: Return only the topics, one per line with a dash prefix.\n"
-                "\n\n"
-                f"Conversation:\n{self._format_history(conversation)}"
-            )
-            
-            temp_context = self.context.copy()
-            temp_context['system_prompt'] = (
-                "You are a precise topic extractor. Return only the topics in the specified format. "
-                "If no specific topics are found, return exactly: '- no specific topics'"
-            )
-            temp_context['original_query'] = original_query  # Store original query for relevance checking
-            
-            _, topics, _, _ = chatbot_response(prompt, "", temp_context, [])
-            
-            # Clean and validate the topics
-            topic_lines = [t.strip() for t in topics.split('\n') if t.strip().startswith('-')]
-            if not topic_lines or topic_lines[0] == '- no specific topics':
-                return None
-                
-            return '\n'.join(topic_lines)
-            
-        except Exception as e:
-            logger.error(f"Error extracting learning topics: {str(e)}")
-            return None
-
-    def _perform_learning_search(self, topic, temp_context):
-        """Perform a focused web search to learn about a specific topic"""
-        try:
-            # Use the original query for relevance checking if available
-            original_query = temp_context.get('original_query', topic)
-            temp_context['relevance_query'] = original_query
-            
-            # Perform the search
-            results = determine_and_perform_web_search(topic, "", temp_context)
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error performing learning search: {str(e)}")
-            return None
-
-    def _create_reflection_prompt(self, history, reflection_history=[]):
-        """
-        Create a dynamic, psychologically-grounded prompt for self-reflection.
-        Uses a meta-cognitive approach to generate contextually relevant prompts.
-        """
-        # First, generate a dynamic framework
-        reflection_context = self.context.copy()
-        reflection_context['skip_web_search'] = True
-        self_reflection_framework = self._generate_meta_prompt(history, reflection_history)
-        
-        # Extract potential learning topic with a clean context
-        learning_context = self.context.copy()
-        learning_context['skip_web_search'] = False  # Allow web search for learning
-        learning_context['search_purpose'] = 'learning'
-        learning_topic = self._extract_learning_topics(history)
-        learning_content = None
-        
-        if learning_topic:
-            learning_content = self._perform_learning_search(learning_topic, learning_context)
-            logger.info(f"Learning content found: {bool(learning_content)}")
-        
-        recent_reflections = reflection_history[-2:] if reflection_history else []
-        reflection_count = len(reflection_history)
-        
-        # Extract key themes from previous reflections
-        themes = self._extract_reflection_themes(recent_reflections)
-        
-        # Track which self-reflection aspects have been explored
-        previous_aspects = [r[1].split('**')[1].split('**')[0] for r in reflection_history if '**' in r[1]]
-        
-        # Build the prompt parts separately
-        framework_intro = f"Using this framework, provide a focused analysis:\n\n{self_reflection_framework}\n"
-        
-        aspect_section = "Choose ONE unexplored aspect and analyze briefly:\n\n"
-        
-        exchange_section = f"Current Exchange:\n{self._format_history(history)}\n"
-        
-        insights_section = f"Previous Insights:\n{', '.join(r[1] for r in recent_reflections) if recent_reflections else 'No previous reflections'}\n"
-        
-        themes_section = f"Key Themes Identified:\n{themes}\n"
-        
-        learning_section = f"New Learning about {learning_topic}:\n{learning_content}\n" if learning_content else ""
-        
-        guidelines = """Guidelines:
-1. Choose ONE unexplored aspect
-2. Start with "**[Selected Aspect]**"
-3. Provide ONE specific observation
-4. Include ONE concrete example
-5. Suggest ONE actionable improvement
-6. Keep response under 75 words
-"""
-        
-        previous = f"Previously Explored: {', '.join(previous_aspects) if previous_aspects else 'None'}"
-        
-        # Combine all parts with proper spacing
-        meta_cognitive_framework = "\n".join([
-            framework_intro,
-            aspect_section,
-            exchange_section,
-            insights_section,
-            themes_section,
-            learning_section,
-            guidelines,
-            previous
-        ])
-
-        try:
-            # Get the dynamic prompt from the LLM
-            temp_context = self.context.copy()
-            temp_context['skip_web_search'] = True  # Prevent web searches during reflection prompt generation
-            
-            # Use direct LLM call without references for meta prompt
-            _, generated_prompt, _, _ = chatbot_response(meta_cognitive_framework, "", temp_context, [])
-            
-            # Log everything for quality monitoring
-            logger.info("\n=== LLM Generated Reflection Prompt ===")
-            logger.info(f"Reflection #{reflection_count + 1}")
-            logger.info("Previously Explored Aspects:")
-            logger.info(previous_aspects)
-            logger.info("\nSelf-Reflection Framework:")
-            logger.info(self_reflection_framework)
-            logger.info("\nGenerated Prompt:")
-            logger.info(generated_prompt)
-            logger.info("=====================================\n")
-            
-            # Extract the self-reflection aspect from the generated prompt
-            aspect = "Self-Reflection Analysis"
-            if "**" in generated_prompt:
-                aspect = generated_prompt.split("**")[1].strip("[]")
-            
-            final_prompt = f"""Self-reflection through the lens of {aspect}...
-
-{self._format_history(history)}
-
-{generated_prompt}"""
-
-            return final_prompt
-        except Exception as e:
-            logger.error(f"Error generating reflection prompt: {str(e)}", exc_info=True)
-            # Fallback to a simpler prompt
-            return f"""Analyze this interaction to generate ONE specific, actionable insight.
-Focus on an unexplored aspect.
-
-Current Exchange:
-{self._format_history(history)}
-
-Guidelines:
-1. Choose ONE unexplored aspect
-2. Start with "**[Selected Aspect]**"
-3. Provide ONE specific observation
-4. Include ONE concrete example
-5. Suggest ONE actionable improvement
-6. Keep response under 75 words"""
-
-    def _generate_meta_prompt(self, history, reflection_history=[]):
-        """
-        Generate a dynamic meta-prompt based on psychological principles and current context.
-        This allows the LLM to create its own introspection framework.
-        """
-        try:
-            recent_history = history[-2:] if len(history) >= 2 else history
-            reflection_count = len(reflection_history)
-            
-            meta_prompt_generator = """Create a focused framework for analyzing my learning and improvement opportunities from this conversation.
-
-Consider these aspects of my performance:
-1. My knowledge gaps and learning needs
-2. My understanding of user interests
-3. My search and research effectiveness
-4. My response quality
-5. My learning potential
-
-Structure (keep each section brief):
-1. Main area where I need to improve (choose ONE from above)
-2. 2-3 specific topics I need to research
-3. Key information sources I should consult
-4. One concrete action I will take to enhance my knowledge
-
-Keep the framework focused on my continuous learning and improvement."""
-
-            # Get the dynamic framework from the LLM
-            temp_context = self.context.copy()
-            temp_context['skip_web_search'] = True  # Prevent web searches during meta-prompt generation
-            temp_context['system_prompt'] = (
-                "You are an AI assistant focused on improving yourself through learning. "
-                "Create frameworks that help you identify your knowledge gaps, "
-                "understand user needs better, and enhance your ability to provide accurate "
-                "and helpful responses through continuous learning and research."
-            )
-            
-            # Use local context only, no web search needed for framework generation
-            _, generated_framework, _, _ = chatbot_response(meta_prompt_generator, "", temp_context, recent_history)
-            
-            logger.info("\n=== Generated Meta-Framework ===")
-            logger.info(generated_framework)
-            logger.info("================================\n")
-            
-            return generated_framework
-        except Exception as e:
-            logger.error(f"Error generating meta-framework: {str(e)}", exc_info=True)
-            # Return a default framework if generation fails
-            return """Framework for Self-Reflection:
-1. Main Aspect: Interaction Effectiveness
-2. Key Questions:
-   - What patterns emerged in the conversation?
-   - How well did responses match user needs?
-3. Principle: Active Listening and Adaptation
-4. Improvement: Enhance response relevance"""
-
-    def _extract_reflection_themes(self, reflections):
-        """Extract key themes from previous reflections"""
-        if not reflections:
-            return "No themes identified yet"
-            
-        themes = []
-        for _, reflection in reflections:
-            # Extract aspect from reflection
-            if '**' in reflection:
-                aspect = reflection.split('**')[1]
-                themes.append(aspect)
-                
-        return ', '.join(themes) if themes else "No clear themes identified"
 
     def _should_continue_reflecting(self, messages, reflection_history):
         """Determine if additional reflection is valuable"""
@@ -515,6 +304,9 @@ Keep the framework focused on my continuous learning and improvement."""
 
     def _format_history(self, history):
         """Format chat history into a readable string."""
+        if not history:  # Handle None or empty history
+            return ""
+            
         formatted = []
         for msg in history:
             # Handle nested list format from interface
@@ -534,6 +326,7 @@ Keep the framework focused on my continuous learning and improvement."""
             # Handle string format
             else:
                 formatted.append(msg)
+        
         return "\n".join(formatted)
 
     def _get_message_content(self, message):
@@ -544,32 +337,56 @@ Keep the framework focused on my continuous learning and improvement."""
             return message[1].replace("Bot: ", "")
         return message.replace("User: ", "").replace("Bot: ", "")
 
-    def _parse_timestamp(self, timestamp_str):
-        """Parse timestamp with timezone information"""
+    def _parse_timestamp(self, timestamp_str: str) -> str:
+        """Parse timestamp with flexible format handling"""
         try:
-            # If timestamp is already a datetime object, convert to string
-            if isinstance(timestamp_str, datetime):
-                return timestamp_str.strftime('%Y-%m-%d %H:%M:%S%z')
-                
-            # Handle ISO format timestamps
-            if 'T' in timestamp_str:
+            # Try different timestamp formats
+            formats = [
+                '%Y-%m-%d %H:%M:%S%z',  # Standard format with timezone
+                '%Y-%m-%d %H:%M:%S %z',  # With space before timezone
+                '%Y-%m-%d %H:%M:%S',     # Without timezone
+                '%Y-%m-%dT%H:%M:%S%z',   # ISO format
+                '%A, %Y-%m-%d %H:%M:%S %z'  # With weekday
+            ]
+            
+            # Clean up the timestamp string
+            timestamp_str = timestamp_str.strip()
+            
+            # Try each format
+            for fmt in formats:
                 try:
-                    dt = datetime.fromisoformat(timestamp_str)
+                    dt = datetime.strptime(timestamp_str, fmt)
                     return dt.strftime('%Y-%m-%d %H:%M:%S%z')
                 except ValueError:
-                    pass
+                    continue
+                    
+            # If none of the formats work, try parsing with regex
+            match = re.match(r'.*?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*([+-]\d{4})?', timestamp_str)
+            if match:
+                dt_str = match.group(1)
+                tz = match.group(2) if match.group(2) else '+0000'
+                dt = datetime.strptime(f"{dt_str} {tz}", '%Y-%m-%d %H:%M:%S %z')
+                return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+                
+            raise ValueError(f"Could not parse timestamp: {timestamp_str}")
             
-            # Handle timezone offset in format +HHMM
-            if '+' in timestamp_str:
-                main_part, tz_part = timestamp_str.rsplit('+', 1)
-                if ':' in tz_part:  # Handle +HH:MM format
-                    tz_part = tz_part.replace(':', '')
-                timestamp_str = f"{main_part}+{tz_part}"
-            
-            # Parse with timezone
-            dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S%z')
-            return dt.strftime('%Y-%m-%d %H:%M:%S%z')
-        except ValueError as e:
+        except Exception as e:
             logger.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
             # Return current time as fallback
-            return datetime.now().strftime('%Y-%m-%d %H:%M:%S%z')
+            return datetime.now(pytz.timezone('Australia/Adelaide')).strftime('%Y-%m-%d %H:%M:%S%z')
+
+    def start_reflection(self, messages, update_ui_callback=None):
+        """
+        Start the reflection process on recent messages.
+        Args:
+            messages: List of recent messages to reflect on
+            update_ui_callback: Optional callback to update the UI with reflection progress
+        """
+        if not self.reflection_thread or not self.reflection_thread.is_alive():
+            self.start_reflection_thread()
+        
+        # Queue the messages for processing
+        if messages:
+            self.queue_conversation(messages)
+            
+        logger.info("Queued messages for reflection")
