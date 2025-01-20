@@ -154,46 +154,76 @@ Respond with only a number between 0.0 and 1.0."""
             logger.error(f"Error getting LLM response: {e}")
             raise
 
-    def _evaluate_web_search_need(self, conversation_text: str) -> Tuple[bool, str]:
+    def _evaluate_web_search_need(self, conversation_text: str) -> Tuple[bool, Optional[str]]:
         """Evaluate if web search is needed and generate search query"""
-        from CognitiveProcessing import determine_and_perform_web_search
-        
-        prompt = """Analyze this conversation and determine if it requires fact-checking or additional information from the web.
-Consider:
-- Questions about current events, facts, or topics
-- Claims that should be verified
-- Topics that need more context or explanation
-
-Format your response as:
-SEARCH_NEEDED: [yes/no]
-QUERY: [search query if needed, or 'none' if not needed]
-REASON: [brief explanation]"""
-
         try:
-            # Get initial evaluation from LLM
-            response = self._get_llm_response(prompt, conversation_text)
+            # Prompt to evaluate web search need
+            evaluation_prompt = """Based on this conversation, determine if a web search would be valuable. 
+            Consider these factors:
+            - Are there questions about current events, facts, or information?
+            - Is there a need to verify or expand on mentioned topics?
+            - Would additional context from the web enhance understanding?
+            - Is real-time or up-to-date information needed?
+            
+            If a search is needed, provide a clear, focused search query.
+            If no search is needed, explain why briefly.
+            
+            Respond in this format:
+            SEARCH_NEEDED: [YES/NO]
+            QUERY: [search query if needed, or "none" if not needed]
+            REASON: [brief explanation]"""
+
+            # Get evaluation from LLM
+            response = self._get_llm_response(evaluation_prompt, conversation_text)
             
             # Parse response
-            search_needed = 'SEARCH_NEEDED: yes' in response.lower()
-            query_match = re.search(r'QUERY: (.+?)(?=\nREASON:|$)', response, re.IGNORECASE | re.DOTALL)
+            search_needed = 'SEARCH_NEEDED: YES' in response.upper()
+            query_match = re.search(r'QUERY:\s*(.+?)(?:\n|$)', response)
             query = query_match.group(1).strip() if query_match else None
             
+            # Don't return "none" as a query
             if query and query.lower() == 'none':
-                search_needed = False
                 query = None
-            
-            if search_needed and query:
-                # Use existing determine_and_perform_web_search to validate need
-                rag_summary = ""  # We don't have RAG context here
-                result = determine_and_perform_web_search(query, rag_summary, self.context)
-                search_needed = result.get("needs_web_search", False)
                 
-            logger.info(f"Web search evaluation - needed: {search_needed}, query: {query}")
             return search_needed, query
             
         except Exception as e:
-            logger.error(f"Error evaluating web search need: {e}")
+            logger.error(f"Error in web search evaluation: {e}")
             return False, None
+            
+    def _process_web_search_results(self, query: str, content: str) -> Tuple[str, Optional[str]]:
+        """Process web search results into memory"""
+        try:
+            # Prompt for processing web search results
+            processing_prompt = f"""Analyze this web search content about "{query}" and create a concise, informative summary.
+            Focus on:
+            1. Key facts and information
+            2. Relevance to the original query
+            3. Any time-sensitive information
+            
+            Format the summary as a natural, contextual statement that would be useful for future reference.
+            If the content is not relevant or useful, respond with "No relevant information found."
+            """
+            
+            # Get summary from LLM
+            summary = self._get_llm_response(processing_prompt, content)
+            
+            # If no relevant info, return None
+            if "No relevant information found" in summary:
+                return 'short_term', None
+                
+            # Determine memory type based on content
+            memory_type = 'mid_term'  # Default to mid-term for web search results
+            if any(term in content.lower() for term in ['today', 'current', 'latest', 'breaking']):
+                memory_type = 'short_term'  # Use short-term for very time-sensitive info
+            elif any(term in content.lower() for term in ['history', 'fundamental', 'principle', 'definition']):
+                memory_type = 'long_term'  # Use long-term for foundational knowledge
+                
+            return memory_type, summary
+            
+        except Exception as e:
+            logger.error(f"Error processing web search results: {e}")
+            return 'short_term', None
 
     def process_conversation(self, current_exchange: List[Tuple[str, str]]) -> None:
         """Process a conversation exchange and generate reflection"""
@@ -212,44 +242,21 @@ REASON: [brief explanation]"""
             search_needed, search_query = self._evaluate_web_search_need(conversation_text)
             web_memory = None
             
-            if search_needed and search_query:
-                from CognitiveProcessing import perform_web_search, get_detailed_web_content
-                
-                logger.info(f"Performing web search for: {search_query}")
-                # Use existing web search infrastructure
-                search_results = perform_web_search(search_query, self.context.get('ddgs'))
-                if search_results:
-                    # Get detailed content using existing function
-                    detailed_content = get_detailed_web_content(search_results, search_query, self.context)
-                    if detailed_content:
-                        # Process web content into memory
-                        memory_type, summary = self._process_web_search_results(search_query, detailed_content)
-                        if summary:
-                            web_memory = {
-                                'content': summary,
-                                'type': memory_type,
-                                'query': search_query,
-                                'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
-                            }
-            
             # Step 3: Determine memory type and expiry for conversation
             memory_type, expiry = self._determine_memory_type(surprise_score)
             logger.info(f"Determined memory type: {memory_type}, expiry: {expiry}")
             
             # Step 4: Process memory if score warrants retention
             memory_data = None
+            
             if surprise_score >= self.surprise_thresholds['low']:
                 logger.info(f"Score {surprise_score} >= threshold {self.surprise_thresholds['low']}, processing memory")
                 memory_prompt = self.memory_prompts[memory_type]
                 logger.info(f"Using {memory_type} memory prompt")
                 memory_data = self._get_llm_response(memory_prompt, conversation_text)
                 logger.info(f"Generated memory: {memory_data[:200]}...")
-            else:
-                logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
-
-            # Save memories
-            if memory_data or web_memory:
-                # Save conversation memory if exists
+                
+                # Save initial memory first
                 if memory_data:
                     metadata = {
                         'memory_type': memory_type,
@@ -275,32 +282,55 @@ REASON: [brief explanation]"""
                     if vector_store:
                         vector_store.add_documents([memory_doc])
                         logger.info(f"Added conversation memory to embeddings")
+                        
+                        # Only after saving initial memory, check if web search is needed
+                        if search_needed and search_query:
+                            from CognitiveProcessing import perform_web_search, get_detailed_web_content
+                            
+                            logger.info(f"Performing web search for: {search_query}")
+                            # Use existing web search infrastructure
+                            search_results = perform_web_search(search_query, self.context.get('ddgs'))
+                            if search_results:
+                                # Get detailed content using existing function
+                                detailed_content = get_detailed_web_content(search_results, search_query, self.context)
+                                if detailed_content:
+                                    # Process web content into memory
+                                    web_memory_type, summary = self._process_web_search_results(search_query, detailed_content)
+                                    if summary:
+                                        web_memory = {
+                                            'content': summary,
+                                            'type': web_memory_type,
+                                            'query': search_query,
+                                            'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                                        }
+            else:
+                logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
+
+            # Save web memory if it exists
+            if web_memory:
+                web_metadata = {
+                    'memory_type': web_memory['type'],
+                    'expiry_date': self._calculate_expiry(web_memory['type']).isoformat(),
+                    'timestamp': web_memory['timestamp'],
+                    'query': web_memory['query']
+                }
+                self.history_manager.add_reflection(web_memory['content'], context=web_metadata)
                 
-                # Save web search memory if exists
-                if web_memory:
-                    web_metadata = {
-                        'memory_type': web_memory['type'],
-                        'expiry_date': self._calculate_expiry(web_memory['type']).isoformat(),
+                # Add to vector store
+                web_doc = Document(
+                    page_content=web_memory['content'],
+                    metadata={
+                        'source': 'web_search',
+                        'type': web_memory['type'],
+                        'expiry_date': web_metadata['expiry_date'],
+                        'query': web_memory['query'],
                         'timestamp': web_memory['timestamp'],
-                        'query': web_memory['query']
+                        'content_type': 'web_memory'
                     }
-                    self.history_manager.add_reflection(web_memory['content'], context=web_metadata)
-                    
-                    # Add to vector store
-                    web_doc = Document(
-                        page_content=web_memory['content'],
-                        metadata={
-                            'source': 'web_search',
-                            'type': web_memory['type'],
-                            'expiry_date': web_metadata['expiry_date'],
-                            'timestamp': web_memory['timestamp'],
-                            'query': web_memory['query'],
-                            'content_type': 'web_memory'
-                        }
-                    )
-                    if vector_store:
-                        vector_store.add_documents([web_doc])
-                        logger.info(f"Added web search memory to embeddings")
+                )
+                if vector_store:
+                    vector_store.add_documents([web_doc])
+                    logger.info(f"Added web search memory to embeddings")
                 
                 # Save updated vector store
                 if vector_store:
