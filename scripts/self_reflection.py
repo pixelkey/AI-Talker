@@ -65,9 +65,11 @@ Create a natural statement that captures the key insight."""
         # Simple prompt focused on getting a single numerical score
         self.surprise_score_prompt = """Rate how significant or surprising the information in this conversation is on a scale from 0.0 to 1.0.
 
+IMPORTANT: Learning someone's name or identity information is HIGHLY significant (should score 0.8-1.0) unless this information was already known.
+
 Consider these factors for high scores (0.8-1.0):
-- Learning someone's name or identity for the first time
-- Personal preferences or strong opinions
+- First time learning someone's name or identity (this is crucial for building relationship context)
+- Major personal preferences or strong opinions
 - Important facts about the person
 - Significant life events or experiences
 - Key decisions or commitments made
@@ -81,7 +83,9 @@ Consider these factors for low scores (0.0-0.4):
 - Small talk without new information
 - Repetition of known information
 - Greetings without substance
+- If the information is already known in the context
 
+Remember: Names and identity information are especially important for maintaining conversation context.
 Respond with only a number between 0.0 and 1.0."""
 
         # Separate prompt for reasoning (optional, only if score is high)
@@ -99,14 +103,11 @@ Respond with only a number between 0.0 and 1.0."""
     def _extract_score(self, response: str) -> float:
         """Extract numerical score from LLM response"""
         try:
-            # Clean the response and extract the first number
-            response = response.strip()
-            # Look for a decimal number between 0 and 1
-            import re
+            # Look for any number between 0.0 and 1.0 in the response
             matches = re.findall(r'0?\.[0-9]+', response)
             if matches:
                 score = float(matches[0])
-                return min(max(score, 0.0), 1.0)  # Clamp between 0 and 1
+                return score
             return 0.0
         except Exception as e:
             logger.error(f"Error extracting score: {e}")
@@ -152,6 +153,74 @@ Respond with only a number between 0.0 and 1.0."""
             logger.error(f"Error getting LLM response: {e}")
             raise
 
+    def _evaluate_web_search_need(self, conversation_text: str) -> Tuple[bool, str]:
+        """Evaluate if web search is needed and generate search query"""
+        from scripts.CognitiveProcessing import determine_and_perform_web_search
+        
+        prompt = """Analyze this conversation and determine if it requires fact-checking or additional information from the web.
+Consider:
+- Questions about current events, facts, or topics
+- Claims that should be verified
+- Topics that need more context or explanation
+
+Format your response as:
+SEARCH_NEEDED: [yes/no]
+QUERY: [search query if needed, or 'none' if not needed]
+REASON: [brief explanation]"""
+
+        try:
+            # Get initial evaluation from LLM
+            response = self._get_llm_response(prompt, conversation_text)
+            
+            # Parse response
+            search_needed = 'SEARCH_NEEDED: yes' in response.lower()
+            query_match = re.search(r'QUERY: (.+?)(?=\nREASON:|$)', response, re.IGNORECASE | re.DOTALL)
+            query = query_match.group(1).strip() if query_match else None
+            
+            if query and query.lower() == 'none':
+                search_needed = False
+                query = None
+            
+            if search_needed and query:
+                # Use existing determine_and_perform_web_search to validate need
+                rag_summary = ""  # We don't have RAG context here
+                search_needed = determine_and_perform_web_search(query, rag_summary, self.context)[0]
+                
+            logger.info(f"Web search evaluation - needed: {search_needed}, query: {query}")
+            return search_needed, query
+            
+        except Exception as e:
+            logger.error(f"Error evaluating web search need: {e}")
+            return False, None
+
+    def _process_web_search_results(self, query: str, results: str) -> Tuple[str, str]:
+        """Process web search results and determine memory type"""
+        prompt = """Analyze these search results and create a concise summary of the relevant information.
+Consider the type of information:
+- Current events/news (short-term: days/weeks)
+- Temporary facts (mid-term: weeks/months)
+- Lasting knowledge (long-term: months/years)
+
+Format your response as:
+MEMORY_TYPE: [short_term/mid_term/long_term]
+REASON: [why this type was chosen]
+SUMMARY: [concise summary of relevant information]"""
+
+        try:
+            response = self._get_llm_response(prompt, f"Query: {query}\n\nResults: {results}")
+            
+            # Parse response
+            memory_type = re.search(r'MEMORY_TYPE: (.+?)(?=\n|$)', response).group(1).strip()
+            summary_match = re.search(r'SUMMARY: (.+?)(?=\n|$)', response, re.DOTALL)
+            summary = summary_match.group(1).strip() if summary_match else ""
+            
+            logger.info(f"Processed web results - type: {memory_type}, summary length: {len(summary)}")
+            return memory_type, summary
+            
+        except Exception as e:
+            logger.error(f"Error processing web search results: {e}")
+            return "short_term", ""
+
     def process_conversation(self, current_exchange: List[Tuple[str, str]]) -> None:
         """Process a conversation exchange and generate reflection"""
         try:
@@ -165,15 +234,38 @@ Respond with only a number between 0.0 and 1.0."""
             surprise_score = self._extract_score(score_response)
             logger.info(f"Extracted surprise score: {surprise_score}")
             
-            # Determine memory type and expiry
+            # Step 2: Check if web search is needed
+            search_needed, search_query = self._evaluate_web_search_need(conversation_text)
+            web_memory = None
+            
+            if search_needed and search_query:
+                from scripts.CognitiveProcessing import perform_web_search, get_detailed_web_content
+                
+                logger.info(f"Performing web search for: {search_query}")
+                # Use existing web search infrastructure
+                search_results = perform_web_search(search_query, self.context.get('ddgs'))
+                if search_results:
+                    # Get detailed content using existing function
+                    detailed_content = get_detailed_web_content(search_results, search_query, self.context)
+                    if detailed_content:
+                        # Process web content into memory
+                        memory_type, summary = self._process_web_search_results(search_query, detailed_content)
+                        if summary:
+                            web_memory = {
+                                'content': summary,
+                                'type': memory_type,
+                                'query': search_query,
+                                'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                            }
+            
+            # Step 3: Determine memory type and expiry for conversation
             memory_type, expiry = self._determine_memory_type(surprise_score)
             logger.info(f"Determined memory type: {memory_type}, expiry: {expiry}")
             
-            # Step 2: Process memory if score warrants retention
+            # Step 4: Process memory if score warrants retention
             memory_data = None
             if surprise_score >= self.surprise_thresholds['low']:
                 logger.info(f"Score {surprise_score} >= threshold {self.surprise_thresholds['low']}, processing memory")
-                # Get memory processing prompt based on type
                 memory_prompt = self.memory_prompts[memory_type]
                 logger.info(f"Using {memory_type} memory prompt")
                 memory_data = self._get_llm_response(memory_prompt, conversation_text)
@@ -181,46 +273,63 @@ Respond with only a number between 0.0 and 1.0."""
             else:
                 logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
 
-            # Prepare metadata
-            metadata = {
-                'memory_type': memory_type,
-                'expiry_date': expiry.isoformat() if expiry else None,
-                'surprise_score': surprise_score,
-                'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
-            }
-
-            # Save reflection with metadata
-            if memory_data:
-                metadata = {
-                    'memory_type': memory_type,
-                    'expiry_date': expiry.isoformat() if expiry else None,
-                    'surprise_score': surprise_score,
-                    'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
-                }
-                
-                # Save to history manager
-                self.history_manager.add_reflection(memory_data, context=metadata)
-
-                # Create a Document object for the memory
-                memory_doc = Document(
-                    page_content=memory_data,
-                    metadata={
-                        'source': 'memory',
-                        'type': memory_type,
-                        'expiry_date': metadata['expiry_date'],
+            # Save memories
+            if memory_data or web_memory:
+                # Save conversation memory if exists
+                if memory_data:
+                    metadata = {
+                        'memory_type': memory_type,
+                        'expiry_date': expiry.isoformat() if expiry else None,
                         'surprise_score': surprise_score,
-                        'timestamp': metadata['timestamp'],
-                        'content_type': 'conversation_memory'
+                        'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
                     }
-                )
-                
-                # Add to vector store using existing infrastructure
-                vector_store = self.context.get('vector_store')
-                if vector_store:
-                    vector_store.add_documents([memory_doc])
-                    logger.info(f"Added memory to embeddings with metadata: {memory_doc.metadata}")
+                    self.history_manager.add_reflection(memory_data, context=metadata)
                     
-                    # Save the updated vector store to disk
+                    # Add to vector store
+                    memory_doc = Document(
+                        page_content=memory_data,
+                        metadata={
+                            'source': 'memory',
+                            'type': memory_type,
+                            'expiry_date': metadata['expiry_date'],
+                            'surprise_score': surprise_score,
+                            'timestamp': metadata['timestamp'],
+                            'content_type': 'conversation_memory'
+                        }
+                    )
+                    vector_store = self.context.get('vector_store')
+                    if vector_store:
+                        vector_store.add_documents([memory_doc])
+                        logger.info(f"Added conversation memory to embeddings")
+                
+                # Save web search memory if exists
+                if web_memory:
+                    web_metadata = {
+                        'memory_type': web_memory['type'],
+                        'expiry_date': self._calculate_expiry(web_memory['type']).isoformat(),
+                        'timestamp': web_memory['timestamp'],
+                        'query': web_memory['query']
+                    }
+                    self.history_manager.add_reflection(web_memory['content'], context=web_metadata)
+                    
+                    # Add to vector store
+                    web_doc = Document(
+                        page_content=web_memory['content'],
+                        metadata={
+                            'source': 'web_search',
+                            'type': web_memory['type'],
+                            'expiry_date': web_metadata['expiry_date'],
+                            'timestamp': web_memory['timestamp'],
+                            'query': web_memory['query'],
+                            'content_type': 'web_memory'
+                        }
+                    )
+                    if vector_store:
+                        vector_store.add_documents([web_doc])
+                        logger.info(f"Added web search memory to embeddings")
+                
+                # Save updated vector store
+                if vector_store:
                     save_faiss_index_metadata_and_docstore(
                         vector_store.index,
                         vector_store.index_to_docstore_id,
@@ -230,10 +339,10 @@ Respond with only a number between 0.0 and 1.0."""
                         os.environ["DOCSTORE_PATH"]
                     )
                     logger.info("Saved updated vector store to disk")
-                else:
-                    logger.error("Vector store not found in context")
 
-            logger.info(f"Processed conversation: memory_type={memory_type}, score={surprise_score}, memory_length={len(memory_data) if memory_data else 0}")
+            logger.info(f"Processed conversation: memory_type={memory_type}, score={surprise_score}, "
+                       f"memory_length={len(memory_data) if memory_data else 0}, "
+                       f"web_memory={'yes' if web_memory else 'no'}")
 
         except Exception as e:
             logger.error(f"Error in conversation processing: {e}")
