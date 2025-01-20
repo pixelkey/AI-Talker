@@ -7,6 +7,9 @@ import tempfile
 import torchaudio
 import gc
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 class TTSManager:
     def __init__(self, context):
         """Initialize TTS Manager with context"""
@@ -331,6 +334,8 @@ class TTSManager:
         logger.info("\n=== Starting text_to_speech ===")
         
         self.is_processing = True  # Set processing flag
+        self.context['is_processing'] = True  # Set processing flag
+        
         try:
             # Pause any background processes that use GPU
             if 'self_reflection' in self.context:
@@ -499,3 +504,4 @@ class TTSManager:
             return None
         finally:
             self.is_processing = False  # Clear processing flag
+            self.context['is_processing'] = False  # Clear processing flag

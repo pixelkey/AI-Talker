@@ -368,10 +368,12 @@ class MemoryCleanupManager:
 
     def pause_cleanup(self):
         """Pause the cleanup process"""
+        logger.info("Memory cleanup paused")
         self.pause_event.set()
         
     def resume_cleanup(self):
         """Resume the cleanup process"""
+        logger.info("Memory cleanup resumed")
         self.pause_event.clear()
         
     def _cleanup_loop(self) -> None:
@@ -383,6 +385,7 @@ class MemoryCleanupManager:
                 
                 # Check if we're paused
                 if self.pause_event.is_set():
+                    logger.debug("Memory cleanup is paused, sleeping...")
                     time.sleep(1)
                     continue
                 

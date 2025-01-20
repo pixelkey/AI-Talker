@@ -437,10 +437,12 @@ Respond with only a number between 0.0 and 1.0."""
 
     def pause_reflection(self):
         """Pause the reflection process"""
+        logger.info("Self reflection paused")
         self.pause_event.set()
         
     def resume_reflection(self):
         """Resume the reflection process"""
+        logger.info("Self reflection resumed")
         self.pause_event.clear()
 
     def _reflection_loop(self) -> None:
@@ -449,6 +451,7 @@ Respond with only a number between 0.0 and 1.0."""
             try:
                 # Check if we're paused
                 if self.pause_event.is_set():
+                    logger.debug("Self reflection is paused, sleeping...")
                     time.sleep(1)
                     continue
                     
