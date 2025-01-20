@@ -2,6 +2,7 @@ import threading
 import time
 import logging
 import json
+import os
 from queue import Queue, Empty
 from chatbot_functions import chatbot_response
 from typing import Optional, Dict, Any, List, Tuple
@@ -9,6 +10,7 @@ from datetime import datetime, timedelta
 import pytz
 import re
 from langchain.docstore.document import Document  # Fix import path for Document class
+from faiss_utils import save_faiss_index_metadata_and_docstore  # Add import for save function
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,32 +42,25 @@ class SelfReflection:
         
         # Memory processing prompts
         self.memory_prompts = {
-            'long_term': """Analyze this conversation and create a detailed memory entry that will help with future retrieval.
-Include:
-1. A detailed summary of key information learned (facts, preferences, relationships)
-2. Important decisions or commitments made
-3. Main topics and themes discussed
-4. Key entities or names mentioned
-5. Any emotional significance or personal impact
+            'long_term': """Extract only the significant, factual information from this conversation that would be valuable for future reference.
+Focus on:
+- Concrete facts learned about the user (preferences, relationships, important details)
+- Specific decisions or commitments made
+- Key topics that were meaningfully discussed
 
-Focus on including details that would make this memory relevant when searching for similar topics or contexts in the future.""",
+Be concise and only include information that was actually mentioned. Do not add assumptions, formatting, or placeholder text.""",
             
-            'mid_term': """Create a focused memory entry for this conversation that captures its relevance.
-Include:
-1. A clear summary of the main points discussed
-2. Key topics and themes
-3. Any action items or follow-ups
-4. Important context that would help find this memory when relevant
+            'mid_term': """Extract the key actionable information from this conversation.
+Focus on:
+- Specific tasks or follow-ups needed
+- Important context that affects future interactions
+- Key topics that were meaningfully discussed
 
-Focus on information that would make this conversation findable when discussing similar topics.""",
+Be concise and only include information that was actually mentioned. Skip any topics where nothing substantial was discussed.""",
             
-            'short_term': """Create a brief but informative memory entry.
-Include:
-1. A concise summary of what was discussed
-2. The main topic or theme
-3. Key context that would make this memory findable
-
-Keep it brief but include enough detail to make it retrievable when relevant."""
+            'short_term': """Extract only the essential information needed for immediate context.
+Focus on the most important piece of information learned or discussed.
+Be concise and skip any topics where nothing substantial was mentioned."""
         }
 
         # Simple prompt focused on getting a single numerical score
@@ -208,6 +203,17 @@ Keep it brief but include enough detail to make it retrievable when relevant."""
                 if vector_store:
                     vector_store.add_documents([memory_doc])
                     logger.info(f"Added memory to embeddings with metadata: {memory_doc.metadata}")
+                    
+                    # Save the updated vector store to disk
+                    save_faiss_index_metadata_and_docstore(
+                        vector_store.index,
+                        vector_store.index_to_docstore_id,
+                        vector_store.docstore,
+                        os.environ["FAISS_INDEX_PATH"],
+                        os.environ["METADATA_PATH"],
+                        os.environ["DOCSTORE_PATH"]
+                    )
+                    logger.info("Saved updated vector store to disk")
                 else:
                     logger.error("Vector store not found in context")
 
