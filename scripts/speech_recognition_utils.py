@@ -13,10 +13,10 @@ class SpeechRecognizer:
             audio_path (str): Path to the audio file to transcribe
             
         Returns:
-            tuple: (transcribed_text, transcribed_text, status_message)
+            tuple: (transcribed_text, status_message)
         """
         if audio_path is None:
-            return "", "", None
+            return "", "No audio file provided"
         
         try:
             # Use the audio file directly
@@ -25,6 +25,6 @@ class SpeechRecognizer:
             
             # Perform the recognition
             text = self.recognizer.recognize_google(audio)
-            return text, text, f"Transcribed: {text}"
+            return text, f"Transcribed: {text}"
         except Exception as e:
-            return "", "", f"Error transcribing audio: {str(e)}"
+            return "", f"Error transcribing audio: {str(e)}"

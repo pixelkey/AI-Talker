@@ -165,7 +165,7 @@ Respond with only a number between 0.0 and 1.0."""
             - Would additional context from the web enhance understanding?
             - Is real-time or up-to-date information needed?
             
-            If a search is needed, provide a clear, focused search query.
+            If a search is needed, provide a clear, focused search query WITHOUT quotes.
             If no search is needed, explain why briefly.
             
             Respond in this format:
@@ -181,9 +181,13 @@ Respond with only a number between 0.0 and 1.0."""
             query_match = re.search(r'QUERY:\s*(.+?)(?:\n|$)', response)
             query = query_match.group(1).strip() if query_match else None
             
-            # Don't return "none" as a query
-            if query and query.lower() == 'none':
-                query = None
+            # Clean up the query
+            if query:
+                # Remove any quotes from the query
+                query = query.strip('"\'')
+                # Return None if query is "none"
+                if query.lower() == 'none':
+                    query = None
                 
             return search_needed, query
             

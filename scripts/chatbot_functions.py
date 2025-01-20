@@ -450,21 +450,49 @@ def parse_timestamp(timestamp_str: str) -> datetime:
         # Return current time as fallback
         return datetime.now()
 
-def format_messages(history: List[str], current_time: str) -> str:
+def format_messages(history, current_time: str) -> str:
     """Format message history for context."""
-    formatted = []
-    for i, (user_msg, bot_msg) in enumerate(history[-5:]):  # Only use last 5 exchanges
-        # Format user message
-        if not user_msg.startswith('['):
-            user_msg = f"[{current_time}]\n{user_msg}"
-        formatted.append(user_msg)
+    try:
+        formatted_history = []
         
-        # Format bot message
-        if bot_msg and not bot_msg.startswith('['):
-            bot_msg = f"[{current_time}]\n{bot_msg}"
-        formatted.append(bot_msg)
-    
-    return "\n".join(formatted)
+        # Convert history to list if it's not already
+        history_list = history if isinstance(history, list) else []
+        
+        # Take last 5 exchanges
+        recent_history = history_list[-5:] if history_list else []
+        
+        for i, exchange in enumerate(recent_history):
+            if isinstance(exchange, (list, tuple)) and len(exchange) == 2:
+                user_msg, bot_msg = exchange
+                # Extract actual message content without timestamps
+                user_content = extract_message_content(user_msg)
+                bot_content = extract_message_content(bot_msg)
+                formatted_history.append(f"User: {user_content}")
+                formatted_history.append(f"Assistant: {bot_content}")
+        
+        return "\n".join(formatted_history)
+    except Exception as e:
+        logging.error(f"Error formatting messages: {str(e)}")
+        return ""
+
+def extract_message_content(msg: str) -> str:
+    """Extract message content without timestamp and role prefix."""
+    try:
+        if not msg:
+            return ""
+            
+        # If message has timestamp, remove it
+        if msg.startswith('[') and ']' in msg:
+            msg = msg.split(']', 1)[1].strip()
+            
+        # Remove role prefix if present
+        if msg.startswith(('User:', 'Bot:', 'Assistant:')):
+            msg = msg.split(':', 1)[1].strip()
+            
+        return msg
+    except Exception as e:
+        logging.error(f"Error extracting message content: {str(e)}")
+        return msg
 
 def analyze_emotion_and_tone(text: str, context: Dict[str, Any]) -> str:
     """

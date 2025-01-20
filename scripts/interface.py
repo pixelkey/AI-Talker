@@ -199,7 +199,7 @@ def setup_gradio_interface(context):
         # Set up event handlers
         input_text.submit(
             handle_user_input,
-            inputs=[input_text, chatbot],
+            inputs=[input_text, gr.State(value=[])],
             outputs=[
                 chatbot,
                 references,
@@ -214,14 +214,11 @@ def setup_gradio_interface(context):
         audio_input.stop_recording(
             speech_recognizer.transcribe_audio,
             inputs=[audio_input],
-            outputs=[
-                input_text,
-                speech_recognition_text
-            ],
+            outputs=[input_text, speech_recognition_text],
             queue=False
         ).success(
             handle_user_input,
-            inputs=[input_text, chatbot],
+            inputs=[input_text, gr.State(value=[])],
             outputs=[
                 chatbot,
                 references,
