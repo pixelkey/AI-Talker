@@ -116,7 +116,7 @@ Respond with only a number between 0.0 and 1.0."""
 
     def _determine_memory_type(self, surprise_score: float) -> Tuple[str, Optional[datetime]]:
         """Determine memory type and expiry based on surprise score"""
-        current_time = datetime.now(pytz.timezone('Australia/Adelaide'))
+        current_time = self.context.get('current_time')
         
         if surprise_score >= self.surprise_thresholds['high']:
             return 'long_term', None
@@ -229,6 +229,17 @@ Respond with only a number between 0.0 and 1.0."""
             logger.error(f"Error processing web search results: {e}")
             return 'short_term', None
 
+    def _calculate_expiry(self, memory_type: str) -> datetime:
+        """Calculate expiry date for a memory type"""
+        current_time = self.context.get('current_time')
+        
+        if memory_type == 'long_term':
+            return None  # Long-term memories don't expire
+        elif memory_type == 'mid_term':
+            return current_time + timedelta(days=self.memory_expiry['mid_term'])
+        else:  # short_term
+            return current_time + timedelta(days=self.memory_expiry['short_term'])
+
     def process_conversation(self, current_exchange: List[Tuple[str, str]]) -> None:
         """Process a conversation exchange and generate reflection"""
         try:
@@ -266,7 +277,7 @@ Respond with only a number between 0.0 and 1.0."""
                         'memory_type': memory_type,
                         'expiry_date': expiry.isoformat() if expiry else None,
                         'surprise_score': surprise_score,
-                        'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                        'timestamp': self.context.get('current_time').isoformat()
                     }
                     self.history_manager.add_reflection(memory_data, context=metadata)
                     
@@ -305,7 +316,7 @@ Respond with only a number between 0.0 and 1.0."""
                                             'content': summary,
                                             'type': web_memory_type,
                                             'query': search_query,
-                                            'timestamp': datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                                            'timestamp': self.context.get('current_time').isoformat()
                                         }
             else:
                 logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
@@ -314,7 +325,7 @@ Respond with only a number between 0.0 and 1.0."""
             if web_memory:
                 web_metadata = {
                     'memory_type': web_memory['type'],
-                    'expiry_date': self._calculate_expiry(web_memory['type']).isoformat(),
+                    'expiry_date': self._calculate_expiry(web_memory['type']).isoformat() if self._calculate_expiry(web_memory['type']) else None,
                     'timestamp': web_memory['timestamp'],
                     'query': web_memory['query']
                 }
@@ -540,43 +551,56 @@ Respond with only a number between 0.0 and 1.0."""
             return message[1].replace("Bot: ", "")
         return message.replace("User: ", "").replace("Bot: ", "")
 
-    def _parse_timestamp(self, timestamp_str: str) -> str:
+    def _parse_timestamp(self, timestamp_str: str) -> datetime:
         """Parse timestamp with flexible format handling"""
         try:
             # Try different timestamp formats
             formats = [
+                '%Y-%m-%dT%H:%M:%S%z',  # ISO format with timezone
                 '%Y-%m-%d %H:%M:%S%z',  # Standard format with timezone
-                '%Y-%m-%d %H:%M:%S %z',  # With space before timezone
                 '%Y-%m-%d %H:%M:%S',     # Without timezone
-                '%Y-%m-%dT%H:%M:%S%z',   # ISO format
-                '%A, %Y-%m-%d %H:%M:%S %z'  # With weekday
             ]
             
             # Clean up the timestamp string
             timestamp_str = timestamp_str.strip()
             
+            # Handle timezone separately if it exists
+            if '+' in timestamp_str:
+                main_part, tz_part = timestamp_str.rsplit('+', 1)
+                if ':' in tz_part:  # Handle +HH:MM format
+                    tz_part = tz_part.replace(':', '')
+                timestamp_str = f"{main_part}+{tz_part}"
+            
             # Try each format
             for fmt in formats:
                 try:
-                    dt = datetime.strptime(timestamp_str, fmt)
-                    return dt.strftime('%Y-%m-%d %H:%M:%S%z')
+                    return datetime.strptime(timestamp_str, fmt)
                 except ValueError:
                     continue
-                    
-            # If none of the formats work, try parsing with regex
-            match = re.match(r'.*?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*([+-]\d{4})?', timestamp_str)
-            if match:
-                dt_str = match.group(1)
-                tz = match.group(2) if match.group(2) else '+0000'
-                dt = datetime.strptime(f"{dt_str} {tz}", '%Y-%m-%d %H:%M:%S %z')
-                return dt.strftime('%Y-%m-%d %H:%M:%S%z')
-                
-            raise ValueError(f"Could not parse timestamp: {timestamp_str}")
+            
+            # If none of the formats work, try parsing with dateutil
+            from dateutil import parser
+            return parser.parse(timestamp_str)
             
         except Exception as e:
-            logger.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
+            logging.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
             # Return current time as fallback
-            return datetime.now(pytz.timezone('Australia/Adelaide')).strftime('%Y-%m-%d %H:%M:%S%z')
+            return datetime.now()
+
+    def _calculate_expiry(self, memory_type: str) -> Optional[datetime]:
+        """Calculate expiry date for a memory type"""
+        try:
+            current_time = self._parse_timestamp(self.context.get('current_time', '2025-01-20T18:20:58+10:30'))
+            
+            if memory_type == 'long_term':
+                return None  # Long-term memories don't expire
+            elif memory_type == 'mid_term':
+                return current_time + timedelta(days=self.memory_expiry['mid_term'])
+            else:  # short_term
+                return current_time + timedelta(days=self.memory_expiry['short_term'])
+        except Exception as e:
+            logging.error(f"Error calculating expiry: {str(e)}")
+            return None
 
     def start_reflection(self, messages, update_ui_callback=None):
         """
