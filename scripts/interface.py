@@ -85,7 +85,7 @@ def setup_gradio_interface(context):
             chat_manager = context['chat_manager']
 
             # Set current time in context
-            context['current_time'] = '2025-01-08T15:10:11+10:30'  # Using the provided time
+            context['current_time'] = '2025-01-20T12:46:59+10:30'  # Using the actual current time with correct timezone
             
             # Get references and generate response
             refs, filtered_docs, context_documents = retrieve_and_format_references(input_text, context)
