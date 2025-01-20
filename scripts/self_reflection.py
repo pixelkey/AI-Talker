@@ -51,8 +51,14 @@ class SelfReflection:
         )
         logger.info("SelfReflection initialized")
 
-    def start_reflection(self, chat_history, update_ui_callback):
-        """Start the self-reflection process with improved focus and efficiency"""
+    def start_reflection(self, messages, update_ui_callback):
+        """
+        Start the reflection process on recent messages.
+        
+        Args:
+            messages: List of recent messages to reflect on
+            update_ui_callback: Callback to update the UI with reflection progress
+        """
         if self.is_reflecting:
             logger.info("Already reflecting, skipping new reflection")
             return
@@ -75,13 +81,13 @@ class SelfReflection:
         self.stop_reflection.clear()
         
         # Get recent conversation context
-        current_exchange = chat_history[-1:]
+        current_exchange = messages[-1:]
         
         def reflection_loop():
             try:
                 reflection_count = 0
                 reflection_history = []
-                max_reflections = 0 # Limit reflections for efficiency
+                max_reflections = 1 # Limit reflections for efficiency
                 
                 while not self.stop_reflection.is_set() and reflection_count < max_reflections:
                     # Check system resources and TTS status
@@ -140,8 +146,7 @@ class SelfReflection:
                     current_conversation = self._format_history(current_exchange)
                     full_reflection = f"Reflection #{reflection_count + 1}:\n{reflection}\n\nCurrent Conversation:\n{current_conversation}\n\nRelevant Context:\n{current_refs if current_refs else 'No additional context found.'}"
                     
-                    # Save reflection with metadata
-                    logger.info("Saving reflection to history")
+                    # Save reflection with context and update embeddings
                     self.history_manager.add_reflection(
                         reflection,
                         context={
@@ -152,11 +157,16 @@ class SelfReflection:
                         }
                     )
                     
-                    # Add reflection to history
-                    reflection_history.append((
-                        f"Reflection #{reflection_count + 1}",
-                        reflection
-                    ))
+                    # Update embeddings for the reflection
+                    if self.embedding_updater:
+                        self.embedding_updater.update_embeddings([reflection])
+                    
+                    # Add to reflection history for tracking during this session
+                    reflection_history.append((reflection_prompt, reflection))
+                    
+                    # Update state
+                    current_time = datetime.now(pytz.timezone('Australia/Adelaide')).isoformat()
+                    reflection_state = {"last_reflection_time": current_time, "last_reflection": reflection}
                     
                     # Update UI if callback provided
                     try:
@@ -169,24 +179,13 @@ class SelfReflection:
                     reflection_count += 1
                     
                     # Check if further reflection needed
-                    if not self._should_continue_reflecting(chat_history, reflection_history):
+                    if not self._should_continue_reflecting(messages, reflection_history):
                         logger.info("Reflection complete, no further insights needed")
                         break
                     
                     # Pause briefly between reflections
                     time.sleep(1)
                     
-                # Update embeddings with all reflections at once
-                if reflection_history:
-                    logger.info(f"Updating embeddings with {len(reflection_history)} reflections")
-                    try:
-                        # Create a temporary state for reflection updates
-                        reflection_state = {"last_processed_index": 0}
-                        self.embedding_updater.update_chat_embeddings_async(reflection_history, reflection_state)
-                        logger.info("Embeddings update started")
-                    except Exception as e:
-                        logger.error(f"Error updating embeddings: {str(e)}", exc_info=True)
-                
             except Exception as e:
                 logger.error(f"Error in reflection loop: {str(e)}", exc_info=True)
             finally:
@@ -472,7 +471,7 @@ Keep the framework focused on my continuous learning and improvement."""
                 
         return ', '.join(themes) if themes else "No clear themes identified"
 
-    def _should_continue_reflecting(self, chat_history, reflection_history):
+    def _should_continue_reflecting(self, messages, reflection_history):
         """Determine if additional reflection is valuable"""
         # Check system resources first
         if is_gpu_too_hot():

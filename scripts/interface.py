@@ -2,7 +2,6 @@
 
 import gradio as gr
 from chatbot_functions import chatbot_response, clear_history, retrieve_and_format_references
-from chat_history import ChatHistoryManager
 from ingest_watcher import IngestWatcher
 from faiss_utils import save_faiss_index_metadata_and_docstore
 import os
@@ -41,10 +40,6 @@ def setup_gradio_interface(context):
     # Initialize state
     state = {"last_processed_index": 0}
 
-    # Initialize chat manager once at startup
-    chat_manager = ChatHistoryManager()
-    context['chat_manager'] = chat_manager
-
     # Initialize vector store client and LLM client
     vector_store_client = VectorStoreClient(
         context['vector_store'],
@@ -81,9 +76,6 @@ def setup_gradio_interface(context):
             if not input_text or not input_text.strip():
                 return history, "", "", history, None
                 
-            # Get chat manager from context
-            chat_manager = context['chat_manager']
-
             # Set current time in context
             context['current_time'] = '2025-01-20T12:46:59+10:30'  # Using the actual current time with correct timezone
             
@@ -101,7 +93,6 @@ def setup_gradio_interface(context):
             
             # Update history with the new user and bot messages
             new_history = history + [(user_msg, bot_msg)]
-            chat_manager.save_history(new_history)
             
             # Generate speech for the response
             print("\nGenerating TTS response...")
@@ -111,9 +102,6 @@ def setup_gradio_interface(context):
             print(f"DEBUG - TTS text with emotion: {tts_text[:100]}...")
             audio_path = tts_manager.text_to_speech(tts_text)
             print("TTS generation complete")
-            
-            # Update embeddings in background
-            context['embedding_updater'].update_chat_embeddings_async(history, state)
             
             # Wait for TTS to fully complete before starting reflection
             while tts_manager.is_processing:

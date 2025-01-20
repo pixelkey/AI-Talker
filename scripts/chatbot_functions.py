@@ -64,7 +64,7 @@ def chatbot_response(input_text, context_documents, context, history):
         formatted_time = current_time
     
     # Format chat history with timestamps
-    formatted_history = format_chat_history(history, current_time)
+    formatted_history = format_messages(history, current_time)
     if formatted_history:
         formatted_history = f"Conversation History:\n{formatted_history}\n"
     
@@ -86,13 +86,9 @@ def chatbot_response(input_text, context_documents, context, history):
         # Add to final context for LLM
         final_context.append(web_ref)
         
-        # Format web search results for history display and saving
+        # Format web search results for history display
         timestamp_msg = f"[{formatted_time}]\nUser: {input_text}"
         history.append([timestamp_msg, f"[{formatted_time}]\nBot: {web_ref}"])
-        
-        # Save the updated history to persist web search results
-        if context.get("chat_manager"):
-            context["chat_manager"].save_history(history)
     
     # Add RAG results if they exist and aren't duplicates of what's in history
     if context_documents:
@@ -443,36 +439,21 @@ def parse_timestamp(timestamp_str: str) -> datetime:
         logging.error(f"Error parsing timestamp {timestamp_str}: {e}")
         return datetime.now().astimezone()
 
-def format_chat_history(history: List[str], current_time: str) -> str:
-    """
-    Format chat history with timestamps including weekday.
-    Args:
-        history: List of chat messages
-        current_time: Current timestamp from the user's machine
-    Returns:
-        Formatted chat history string
-    """
-    if not history:
-        return ""
+def format_messages(history: List[str], current_time: str) -> str:
+    """Format message history for context."""
+    formatted = []
+    for i, (user_msg, bot_msg) in enumerate(history[-5:]):  # Only use last 5 exchanges
+        # Format user message
+        if not user_msg.startswith('['):
+            user_msg = f"[{current_time}]\n{user_msg}"
+        formatted.append(user_msg)
+        
+        # Format bot message
+        if bot_msg and not bot_msg.startswith('['):
+            bot_msg = f"[{current_time}]\n{bot_msg}"
+        formatted.append(bot_msg)
     
-    formatted_history = []
-    for i, msg in enumerate(history):
-        # Get timestamp from message metadata if available, otherwise use current time
-        timestamp = msg.get('timestamp', current_time) if isinstance(msg, dict) else current_time
-        try:
-            # Parse the timestamp and format with weekday
-            dt = parse_timestamp(timestamp)
-            formatted_time = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
-            role = "User" if i % 2 == 0 else "Bot"
-            content = msg['content'] if isinstance(msg, dict) else msg
-            formatted_history.append(f"[{formatted_time}] {role}: {content}")
-        except (ValueError, TypeError) as e:
-            # Fallback if timestamp parsing fails
-            role = "User" if i % 2 == 0 else "Bot"
-            content = msg['content'] if isinstance(msg, dict) else msg
-            formatted_history.append(f"[{timestamp}] {role}: {content}")
-    
-    return "\n".join(formatted_history)
+    return "\n".join(formatted)
 
 def analyze_emotion_and_tone(text: str, context: Dict[str, Any]) -> str:
     """

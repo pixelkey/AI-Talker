@@ -87,24 +87,21 @@ class IngestWatcher:
             logging.info(f"Created ingest directory at {self.watch_path}")
 
     def start(self):
-        """Start watching the ingest directory"""
-        if self.observer is not None:
-            logging.warning("Watcher is already running")
-            return
+        """Start watching the directory."""
+        try:
+            if self.observer is not None:
+                logging.warning("Watcher is already running")
+                return
 
-        self.observer = Observer()
-        # Watch main ingest directory
-        self.observer.schedule(self.handler, self.watch_path, recursive=True)
-        
-        # Also watch chat history directory
-        chat_history_path = os.path.join(self.watch_path, "chat_history")
-        if not os.path.exists(chat_history_path):
-            os.makedirs(chat_history_path)
-            logging.info(f"Created chat history directory at {chat_history_path}")
-        self.observer.schedule(self.handler, chat_history_path, recursive=True)
-        
-        self.observer.start()
-        logging.info(f"Started watching directories: {self.watch_path}, {chat_history_path}")
+            self.observer = Observer()
+            # Schedule watching the main ingest directory
+            self.observer.schedule(self.handler, self.watch_path, recursive=True)
+            self.observer.start()
+            logging.info(f"Started watching directory: {self.watch_path}")
+            
+        except Exception as e:
+            logging.error(f"Error starting file watcher: {str(e)}")
+            raise
 
     def stop(self):
         """Stop watching the ingest directory"""
