@@ -28,6 +28,7 @@ class MemoryCleanupManager:
         self.pause_event = threading.Event()
         self.is_cleaning = False
         self.last_cleanup_time = None
+        self.pending_evaluations = []  # Queue for skipped evaluations
         
         # Setup logging directory
         self.log_dir = Path(self.context.get('base_dir', '.')) / 'logs' / 'memory_cleanup'
@@ -145,13 +146,15 @@ class MemoryCleanupManager:
         except Exception as e:
             logger.error(f"Error logging cleanup details: {str(e)}")
 
-    def _evaluate_memory_usefulness(self, memory_content: str) -> tuple[bool, str]:
+    def _evaluate_memory_usefulness(self, memory_content: str, doc_id: str = None) -> tuple[bool, str]:
         """Use LLM to evaluate if a memory is worth keeping"""
         try:
             # Skip evaluation if TTS is active
             if self.context.get('is_processing', False) or self.context.get('tts_active', False):
-                logger.debug("TTS/Processing active, skipping memory evaluation")
-                return False, "Skipped evaluation - TTS active"
+                if doc_id:  # Only queue if we have a doc_id
+                    logger.debug(f"TTS/Processing active, queueing evaluation for doc {doc_id}")
+                    self.pending_evaluations.append((doc_id, memory_content))
+                return False, "Queued for later evaluation - TTS active"
 
             temp_context = {
                 'client': self.context['client'],
@@ -217,6 +220,25 @@ class MemoryCleanupManager:
 
             logger.info(f"Starting memory cleanup at {current_time}")
             
+            # Process any pending evaluations first if TTS is not active
+            if self.pending_evaluations and not self.context.get('tts_active', False):
+                logger.info(f"Processing {len(self.pending_evaluations)} pending evaluations")
+                pending = self.pending_evaluations[:]  # Copy the list
+                self.pending_evaluations.clear()  # Clear the queue
+                
+                for doc_id, content in pending:
+                    should_remove, reason = self._evaluate_memory_usefulness(content)
+                    if should_remove:
+                        logger.info(f"Removing previously queued doc {doc_id}: {reason}")
+                        if doc_id in vector_store.docstore._dict:
+                            del vector_store.docstore._dict[doc_id]
+                            if hasattr(vector_store, 'index_to_docstore_id'):
+                                for i, stored_id in enumerate(vector_store.index_to_docstore_id):
+                                    if stored_id == doc_id:
+                                        vector_store.index = vector_store._remove_vectors([i], vector_store.index)
+                                        del vector_store.index_to_docstore_id[i]
+                                        break
+            
             # Get all documents from vector store
             docstore = vector_store.docstore
             all_docs = docstore._dict if hasattr(docstore, '_dict') else {}
@@ -239,16 +261,12 @@ class MemoryCleanupManager:
                             removal_reason = f"Expired (expiry: {expiry_date})"
                             
                     # If not expired or no expiry, check usefulness if it's not a long-term memory
-                    # Skip usefulness check if TTS becomes active during cleanup
                     if not should_remove and doc.metadata.get('type') != 'long_term':
-                        if self.context.get('tts_active', False):
-                            logger.info("TTS became active during cleanup, skipping remaining usefulness checks")
-                            break
-                        should_remove, reason = self._evaluate_memory_usefulness(doc.page_content)
-                        if should_remove:
+                        should_remove, reason = self._evaluate_memory_usefulness(doc.page_content, doc_id)
+                        if should_remove and reason != "Queued for later evaluation - TTS active":
                             removal_reason = f"Removing: {reason}"
                     
-                    if should_remove:
+                    if should_remove and removal_reason:  # Only remove if we have a real reason
                         docs_to_remove.append(doc_id)
                         if hasattr(vector_store, 'index_to_docstore_id'):
                             for i, stored_id in enumerate(vector_store.index_to_docstore_id):
