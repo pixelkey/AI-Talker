@@ -512,6 +512,7 @@ Consider:
 
 Return ONLY the emotional cue in brackets, like: [happy and energetic] or [concerned and gentle]
 Keep it simple - use 2-3 descriptive words maximum.
+Do not include any explanations or notes.
 
 Text to analyze:
 {text}
@@ -536,10 +537,22 @@ Emotional Cue:"""
             emotion_cue = response['message']['content'].strip()
             logger.info(f"Local LLM emotion analysis response: {emotion_cue}")
             
-        # Ensure the response is properly formatted
-        if not emotion_cue.startswith('[') or not emotion_cue.endswith(']'):
-            logger.info(f"Reformatting emotion cue: {emotion_cue} -> [{emotion_cue}]")
-            emotion_cue = f"[{emotion_cue}]"
+        # Clean up the response
+        # Remove any explanatory text after the emotion cue
+        if '\n' in emotion_cue:
+            emotion_cue = emotion_cue.split('\n')[0].strip()
+            
+        # Remove any parenthetical notes
+        if '(' in emotion_cue:
+            emotion_cue = emotion_cue.split('(')[0].strip()
+            
+        # Extract just the emotion words if already in brackets
+        if emotion_cue.startswith('[') and ']' in emotion_cue:
+            emotion_cue = emotion_cue[1:emotion_cue.index(']')].strip()
+            
+        # Clean up any remaining brackets and ensure proper format
+        emotion_cue = emotion_cue.replace('[', '').replace(']', '').strip()
+        emotion_cue = f"[{emotion_cue}]"
             
         logger.info(f"Final emotion cue: {emotion_cue}")
         return emotion_cue

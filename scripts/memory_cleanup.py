@@ -189,6 +189,11 @@ class MemoryCleanupManager:
     def _cleanup_expired_memories(self) -> None:
         """Remove expired memories from the vector store and save changes"""
         try:
+            # Skip cleanup if TTS is active
+            if self.context.get('tts_active', False):
+                logger.info("TTS is active, skipping memory cleanup")
+                return
+
             vector_store = self.context.get('vector_store')
             if not vector_store:
                 logger.warning("No vector store found in context")
@@ -229,7 +234,11 @@ class MemoryCleanupManager:
                             removal_reason = f"Expired (expiry: {expiry_date})"
                             
                     # If not expired or no expiry, check usefulness if it's not a long-term memory
+                    # Skip usefulness check if TTS becomes active during cleanup
                     if not should_remove and doc.metadata.get('type') != 'long_term':
+                        if self.context.get('tts_active', False):
+                            logger.info("TTS became active during cleanup, skipping remaining usefulness checks")
+                            break
                         should_remove, reason = self._evaluate_memory_usefulness(doc.page_content)
                         if should_remove:
                             removal_reason = f"Removing: {reason}"
@@ -380,32 +389,51 @@ class MemoryCleanupManager:
         """Main cleanup loop that runs periodically"""
         while not self.stop_cleanup.is_set():
             try:
+                # Skip completely if any chat/TTS processing is happening
+                if (self.context.get('is_processing', False) or 
+                    self.context.get('tts_active', False) or
+                    self.context.get('chat_active', False)):
+                    # Sleep briefly and continue checking
+                    time.sleep(1)
+                    continue
+
+                # Check if we're paused
+                if self.pause_event.is_set():
+                    logger.debug("Memory cleanup is paused")
+                    # Wait until resumed or stopped
+                    while self.pause_event.is_set() and not self.stop_cleanup.is_set():
+                        time.sleep(1)
+                    continue
+                
                 # Update current time in context
                 self.context['current_time'] = datetime.now(timezone.utc)
                 
-                # Check if we're paused
-                if self.pause_event.is_set():
-                    logger.debug("Memory cleanup is paused, sleeping...")
-                    time.sleep(1)
-                    continue
-                
-                # Only run cleanup if needed and no other processing is happening
-                if self.should_run_cleanup() and not self.context.get('is_processing', False):
+                # Only run cleanup if needed
+                if self.should_run_cleanup():
+                    # Double check no processing started
+                    if (self.context.get('is_processing', False) or 
+                        self.context.get('tts_active', False) or
+                        self.context.get('chat_active', False)):
+                        continue
+                        
                     self.is_cleaning = True
                     self._cleanup_expired_memories()
                     self.is_cleaning = False
                 
-                # Check every minute instead of every hour
-                for _ in range(60):  # 1 minute sleep broken into 1-second chunks
-                    if self.stop_cleanup.is_set():
+                # Sleep for 60 seconds, checking for pause/stop every second
+                for _ in range(60):
+                    if (self.stop_cleanup.is_set() or 
+                        self.pause_event.is_set() or
+                        self.context.get('is_processing', False) or
+                        self.context.get('tts_active', False) or
+                        self.context.get('chat_active', False)):
                         break
                     time.sleep(1)
                     
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {str(e)}")
                 logger.error(traceback.format_exc())
-                self.is_cleaning = False
-                time.sleep(60)  # Wait a bit before retrying after error
+                time.sleep(60)  # Sleep for a minute on error before retrying
 
     def get_next_cleanup_time(self) -> Optional[datetime]:
         """Get the time of the next scheduled cleanup"""
