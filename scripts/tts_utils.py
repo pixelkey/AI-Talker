@@ -6,6 +6,7 @@ import logging
 import tempfile
 import torchaudio
 import gc
+from typing import Tuple
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -319,6 +320,31 @@ class TTSManager:
                 return self.tts.tts_with_preset(text, **conservative_kwargs)
             raise
 
+    def validate_brackets(self, text: str) -> Tuple[bool, str]:
+        """
+        Validate that all emotion/style brackets are properly paired.
+        Returns (is_valid, error_message)
+        """
+        # If no opening bracket, text is valid
+        if '[' not in text:
+            return True, ""
+            
+        # Text must start with [ if it contains one
+        if not text.startswith('['):
+            return False, "Emotion/style markers must be at the start of text"
+            
+        # Find matching closing bracket
+        end_bracket = text.find(']')
+        if end_bracket == -1:
+            return False, "Missing closing bracket ']' for emotion/style marker"
+            
+        # Check for any additional brackets
+        remaining_text = text[end_bracket + 1:]
+        if '[' in remaining_text or ']' in remaining_text:
+            return False, "Only one emotion/style marker allowed at the start of text"
+            
+        return True, ""
+
     def text_to_speech(self, text):
         """Convert text to speech using Tortoise TTS with emotional prompting support.
         
@@ -353,6 +379,11 @@ class TTSManager:
                 if self.tts is None:
                     raise RuntimeError("Failed to initialize TTS system")
                     
+                # Validate brackets first
+                is_valid, error_msg = self.validate_brackets(text)
+                if not is_valid:
+                    raise ValueError(f"Invalid emotion/style marker: {error_msg}")
+                
                 # Extract style cue if present
                 style_cue = ""
                 text_to_speak = text
