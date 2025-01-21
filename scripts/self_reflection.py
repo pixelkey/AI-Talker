@@ -81,9 +81,9 @@ Consider these factors for medium scores (0.5-0.7):
 - Day-to-day activities or plans
 
 Consider these factors for low scores (0.0-0.4):
+- Basic greetings or chitchat ("hello", "how are you", weather talk) should always get 0.0
 - Small talk without new information
 - Repetition of known information
-- Greetings without substance
 - If the information is already known in the context
 - If a web search failed or the information was not found
 
