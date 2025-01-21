@@ -64,22 +64,28 @@ def is_content_relevant(content: str, query: str, context: Dict) -> bool:
         return False
         
     start_time = time.time()
-    prompt = f"""Determine if this content has ANY relevance to answering the query.
-Consider content relevant if it:
-- Contains ANY information related to the query topic
-- Mentions ANY terms or concepts from the query
-- Could provide ANY context or background
-- Has ANY connection to the subject matter
-- Could be useful even if only tangentially related
+    prompt = f"""Determine if this content is meaningfully relevant to answering the query.
 
-Be very lenient - if there's ANY possible connection to the query, consider it relevant.
+Consider content relevant ONLY if it:
+- Contains specific information that directly answers the query
+- Provides important context or background knowledge needed to understand the topic
+- Has clear examples or explanations related to the main subject
+- Contains factual information that would help form a complete answer
+- Discusses key concepts or terms central to the query
+
+Consider content NOT relevant if it:
+- Only mentions terms from the query without meaningful context
+- Contains very general or tangential information
+- Is too vague or high-level to be useful
+- Only has superficial keyword matches
+- Would not contribute meaningful information to the answer
 
 Query: "{query}"
 
 Content:
 {content[:1000]}
 
-Respond ONLY with TRUE or FALSE. Default to TRUE if unsure."""
+Respond ONLY with TRUE or FALSE. Default to FALSE if unsure."""
     
     try:
         if config.MODEL_SOURCE == "openai":
