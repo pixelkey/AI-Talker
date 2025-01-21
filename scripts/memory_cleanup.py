@@ -148,6 +148,11 @@ class MemoryCleanupManager:
     def _evaluate_memory_usefulness(self, memory_content: str) -> tuple[bool, str]:
         """Use LLM to evaluate if a memory is worth keeping"""
         try:
+            # Skip evaluation if TTS is active
+            if self.context.get('is_processing', False) or self.context.get('tts_active', False):
+                logger.debug("TTS/Processing active, skipping memory evaluation")
+                return False, "Skipped evaluation - TTS active"
+
             temp_context = {
                 'client': self.context['client'],
                 'MODEL_SOURCE': self.context.get('MODEL_SOURCE', 'local'),
@@ -389,11 +394,10 @@ class MemoryCleanupManager:
         """Main cleanup loop that runs periodically"""
         while not self.stop_cleanup.is_set():
             try:
-                # Skip completely if any chat/TTS processing is happening
+                # Skip completely if any processing is happening
                 if (self.context.get('is_processing', False) or 
-                    self.context.get('tts_active', False) or
-                    self.context.get('chat_active', False)):
-                    # Sleep briefly and continue checking
+                    self.context.get('tts_active', False)):
+                    logger.debug("Processing/TTS active, skipping cleanup loop")
                     time.sleep(1)
                     continue
 
@@ -412,8 +416,7 @@ class MemoryCleanupManager:
                 if self.should_run_cleanup():
                     # Double check no processing started
                     if (self.context.get('is_processing', False) or 
-                        self.context.get('tts_active', False) or
-                        self.context.get('chat_active', False)):
+                        self.context.get('tts_active', False)):
                         continue
                         
                     self.is_cleaning = True
@@ -425,8 +428,7 @@ class MemoryCleanupManager:
                     if (self.stop_cleanup.is_set() or 
                         self.pause_event.is_set() or
                         self.context.get('is_processing', False) or
-                        self.context.get('tts_active', False) or
-                        self.context.get('chat_active', False)):
+                        self.context.get('tts_active', False)):
                         break
                     time.sleep(1)
                     
