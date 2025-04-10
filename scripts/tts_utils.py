@@ -50,13 +50,9 @@ class TTSManager:
                     self._initialize_tts_internal()
                     
     def get_gpu_memory(self):
-        """Get the available GPU memory in GB"""
+        """Get the total GPU memory in GB"""
         if torch.cuda.is_available():
-            total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            allocated = torch.cuda.memory_allocated(0) / (1024**3)
-            reserved = torch.cuda.memory_reserved(0) / (1024**3)
-            available = total - (allocated + reserved)
-            return available
+            return torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
         return 0
 
     def can_use_deepspeed(self):
@@ -64,9 +60,9 @@ class TTSManager:
         return self._use_deepspeed
 
     def get_optimal_tts_config(self):
-        """Get optimal TTS configuration based on available GPU memory"""
-        available_memory = self.get_gpu_memory()
-        print(f"\nAvailable GPU memory: {available_memory:.2f} GB")
+        """Get optimal TTS configuration based on GPU memory"""
+        gpu_memory = self._gpu_memory
+        print(f"\nDetected GPU memory: {gpu_memory:.2f} GB")
 
         # Check DeepSpeed compatibility
         can_use_deepspeed = self.can_use_deepspeed()
@@ -84,23 +80,39 @@ class TTSManager:
         # Generation configuration that will be used in tts_with_preset
         gen_config = {}
 
-        # Optimize settings based on available GPU memory
-        if available_memory >= 8:  # Lots of free memory
+        # Optimize settings for different GPU memory sizes
+        if gpu_memory >= 35:  # For very high-end GPUs (A5000, A6000, etc.)
+            init_config["autoregressive_batch_size"] = 4  # More conservative batch size
+            gen_config.update({
+                "diffusion_iterations": 60,
+                "num_autoregressive_samples": 4,
+                "length_penalty": 0.8,  # Slightly reduce length penalty
+                "repetition_penalty": 2.5,  # Increase repetition penalty
+                "top_k": 50,  # Add top_k sampling
+                "top_p": 0.85  # Slightly increase top_p
+            })
+        elif gpu_memory >= 24:  # For high-end GPUs (24GB+)
+            init_config["autoregressive_batch_size"] = 4
+            gen_config.update({
+                "diffusion_iterations": 60,
+                "num_autoregressive_samples": 4
+            })
+        elif gpu_memory >= 16:  # For GPUs with 16-24GB
             init_config["autoregressive_batch_size"] = 3
             gen_config.update({
-                "diffusion_iterations": 40,
+                "diffusion_iterations": 50,
                 "num_autoregressive_samples": 3
             })
-        elif available_memory >= 4:  # Moderate free memory
-            init_config["autoregressive_batch_size"] = 2
+        elif gpu_memory >= 11.5:  # For GPUs with 12-16GB
+            init_config["autoregressive_batch_size"] = 3
             gen_config.update({
-                "diffusion_iterations": 40,
-                "num_autoregressive_samples": 2
+                "diffusion_iterations": 30,
+                "num_autoregressive_samples": 3
             })
-        else:  # Limited free memory
+        else:  # For GPUs with less than 12GB
             init_config.update({
-                "autoregressive_batch_size": 1,
-                "half": True  # Enable half-precision for low memory
+                "autoregressive_batch_size": 1,  # Increased from 1 to 2 since we're using half precision
+                "half": True  # Enable half-precision for low memory GPUs
             })
             gen_config.update({
                 "diffusion_iterations": 30,
@@ -492,14 +504,7 @@ class TTSManager:
                 # Combine all audio chunks
                 print("\nCombining audio chunks...")
                 if all_audio:
-                    # Ensure all tensors have the same shape
-                    reshaped_audio = []
-                    for audio in all_audio:
-                        if len(audio.shape) == 2:  # [channels, samples]
-                            audio = audio.unsqueeze(0)  # Add batch dimension
-                        reshaped_audio.append(audio)
-                    combined_audio = torch.cat(reshaped_audio, dim=2)  # Concatenate on time dimension
-                    combined_audio = combined_audio.squeeze(0)  # Remove batch dimension
+                    combined_audio = torch.cat(all_audio, dim=1)
                     print(f"Audio chunks combined successfully, final shape: {combined_audio.shape}")
                 else:
                     print("No audio generated")
