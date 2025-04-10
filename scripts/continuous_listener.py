@@ -26,6 +26,11 @@ class ContinuousListener:
             callback: Function to call with recognized text when recognized
         """
         self.recognizer = sr.Recognizer()
+        # Configure pause threshold for longer pauses between words/phrases
+        self.recognizer.pause_threshold = 2.0  # Default is 0.8
+        self.recognizer.phrase_threshold = 0.3  # Default is 0.3
+        self.recognizer.non_speaking_duration = 1.0  # Default is 0.5
+        
         self.activation_word = activation_word.lower()
         self.deactivation_word = deactivation_word.lower()
         self.callback = callback
@@ -52,7 +57,12 @@ class ContinuousListener:
                 while not self.stop_requested:
                     try:
                         # Short timeout for checking stop_requested frequently
-                        audio = self.recognizer.listen(source, timeout=2, phrase_time_limit=3)
+                        # Using only timeout and phrase_time_limit parameters
+                        audio = self.recognizer.listen(
+                            source, 
+                            timeout=2, 
+                            phrase_time_limit=3
+                        )
                         
                         try:
                             text = self.recognizer.recognize_google(audio).lower()
@@ -102,7 +112,13 @@ class ContinuousListener:
                     logger.info("Listening for input... (say 'stop' to end conversation)")
                     
                     try:
-                        audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=15)
+                        # Using only timeout and phrase_time_limit parameters
+                        # Increased phrase_time_limit to 30 seconds for longer sentences
+                        audio = self.recognizer.listen(
+                            source, 
+                            timeout=5, 
+                            phrase_time_limit=30
+                        )
                         
                         try:
                             text = self.recognizer.recognize_google(audio).lower()
