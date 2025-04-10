@@ -27,6 +27,7 @@ gradio_files/
 
 # Log files
 *.log
+logs/*
 
 # Ignore outputs of the Gradio interface
 *.output
