@@ -39,6 +39,9 @@ env_config = {
     "CHUNK_OVERLAP_PERCENTAGE": {"default": "20", "type": int},
     "TOKEN_ENCODING": {"default": "cl100k_base", "type": str},
     "TTS_VOICE": {"default": "emma", "type": str},  # Default TTS voice to use
+    "CONTINUOUS_LISTENING": {"default": "true", "type": lambda x: x.lower() == "true"},  # Enable continuous mic listening
+    "ACTIVATION_WORD": {"default": "activate", "type": str},  # Word to activate listening
+    "DEACTIVATION_WORD": {"default": "stop", "type": str},  # Word to deactivate listening
 }
 
 # Reset environment variables before loading .env to ensure they are not reused

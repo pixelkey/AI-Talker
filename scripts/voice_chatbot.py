@@ -1,49 +1,32 @@
-# scripts/main.py
+# scripts/voice_chatbot.py
 
-import torch
-import gc
+import os
 import logging
 import time
 from datetime import datetime
 import threading
-from initialize import initialize_model_and_retrieval
 from continuous_listener import ContinuousListener
 from tts_utils import TTSManager
 from chatbot_functions import chatbot_response, retrieve_and_format_references
-from vector_store_client import VectorStoreClient
-from document_processing import normalize_text
-from embedding_updater import EmbeddingUpdater
-from self_reflection import SelfReflection
-from memory_cleanup import MemoryCleanupManager
-from ingest_watcher import IngestWatcher
-import ollama
+from initialize import initialize_context
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-def clear_gpu_memory():
-    """Clear CUDA memory and garbage collect"""
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-    gc.collect()
 
 class VoiceChatbot:
     """Backend-only voice chatbot that uses activation/deactivation words"""
     
-    def __init__(self, context):
+    def __init__(self):
         """Initialize the voice chatbot"""
         logger.info("Initializing voice chatbot...")
         
-        # Store context
-        self.context = context
+        # Initialize context and components
+        self.context = initialize_context()
         
-        # Initialize components that were in the Gradio interface
-        self._initialize_components()
+        # Initialize TTS
+        self.tts_manager = TTSManager(self.context)
+        self.context['tts_manager'] = self.tts_manager
         
         # Initialize history
         self.history = []
@@ -63,63 +46,10 @@ class VoiceChatbot:
         # Flag to track if we're running
         self.running = False
         
-    def _initialize_components(self):
-        """Initialize all the components that were in the Gradio interface"""
-        # Initialize TTS at startup
-        tts_manager = TTSManager(self.context)
-        self.context['tts_manager'] = tts_manager  # Add TTS manager to context
-        self.tts_manager = tts_manager
-        
-        # Initialize vector store client
-        vector_store_client = VectorStoreClient(
-            self.context['vector_store'],
-            self.context['embeddings'],
-            normalize_text
-        )
-        self.context['vector_store_client'] = vector_store_client
-        
-        # Initialize Ollama client for local LLM if needed
-        if self.context.get('MODEL_SOURCE') == 'local':
-            self.context['client'] = ollama
-            
-        # Initialize embedding updater
-        embedding_updater = EmbeddingUpdater(self.context)
-        self.context['embedding_updater'] = embedding_updater
-        
-        # Initialize self reflection
-        self_reflection = SelfReflection(self.context)
-        self.context['self_reflection'] = self_reflection
-        self_reflection.start_reflection_thread()
-        
-        # Initialize memory cleanup manager
-        memory_cleanup = MemoryCleanupManager(self.context)
-        self.context['memory_cleanup'] = memory_cleanup
-        memory_cleanup.start_cleanup_thread()
-        if memory_cleanup.should_run_cleanup():
-            logger.info("Memory cleanup needed - will run shortly")
-        else:
-            last_cleanup = memory_cleanup._get_last_cleanup_from_logs()
-            if last_cleanup:
-                logger.info(f"Last memory cleanup was at {last_cleanup}")
-                
-        # Create and set up ingest watcher
-        watcher = IngestWatcher(embedding_updater.update_embeddings)
-        self.context['watcher'] = watcher
-        
-    def parse_timestamp(self, timestamp):
-        """Parse timestamp string to datetime object"""
-        if isinstance(timestamp, datetime):
-            return timestamp
-        return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
-        
     def handle_speech_input(self, text):
         """Process speech input and generate response"""
         try:
             logger.info(f"Processing speech input: '{text}'")
-            
-            # Notify self-reflection about user input
-            if 'self_reflection' in self.context:
-                self.context['self_reflection'].notify_user_input()
             
             # Set current time
             current_time = datetime.now().isoformat()
@@ -132,8 +62,7 @@ class VoiceChatbot:
             _, response, refs, _ = chatbot_response(text, context_documents, self.context, self.history)
             
             # Format messages
-            dt = datetime.now()
-            formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+            formatted_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             user_msg = f"[{formatted_time}] User: {text}"
             bot_msg = f"[{formatted_time}] Bot: {response}"
             
@@ -151,18 +80,12 @@ class VoiceChatbot:
             # Generate speech for the response
             logger.info("Generating TTS response...")
             tts_text = self.context.get('tts_response', response)
-            logger.info(f"DEBUG - Original response: {response[:100]}...")
-            logger.info(f"DEBUG - TTS text with emotion: {tts_text[:100]}...")
             audio_path = self.tts_manager.text_to_speech(tts_text)
             logger.info(f"TTS generation complete: {audio_path}")
             
             # Wait for TTS to fully complete before continuing
             while self.tts_manager.is_processing:
                 time.sleep(0.1)
-            
-            # Start reflection after TTS is done
-            if 'self_reflection' in self.context:
-                self.context['self_reflection'].start_reflection(self.history, lambda x: None)
             
             # Signal continuous listener that response is complete
             self.continuous_listener.signal_response_complete()
@@ -209,22 +132,12 @@ class VoiceChatbot:
         # Stop continuous listener
         if self.continuous_listener:
             self.continuous_listener.stop()
-            
-        # Stop other background threads
-        if 'self_reflection' in self.context:
-            self.context['self_reflection'].stop_reflection.set()
-            
+        
         logger.info("Voice chatbot stopped")
 
 def main():
-    # Clear GPU memory at startup
-    clear_gpu_memory()
-    
-    # Initialize the model, embeddings, and retrieval components
-    context = initialize_model_and_retrieval()
-
-    # Initialize and start voice chatbot
-    voice_chatbot = VoiceChatbot(context)
+    """Main function to run the voice chatbot"""
+    voice_chatbot = VoiceChatbot()
     voice_chatbot.start()
 
 if __name__ == "__main__":

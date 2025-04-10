@@ -13,6 +13,7 @@ import time
 from tts_utils import TTSManager
 from embedding_updater import EmbeddingUpdater
 from speech_recognition_utils import SpeechRecognizer
+from continuous_listener import ContinuousListener
 from self_reflection import SelfReflection
 from queue import Queue
 from datetime import datetime
@@ -40,6 +41,18 @@ def setup_gradio_interface(context):
     
     # Initialize speech recognizer
     speech_recognizer = SpeechRecognizer()
+    
+    # Initialize continuous listener if enabled
+    continuous_listener = None
+    if context.get('CONTINUOUS_LISTENING', True):
+        activation_word = context.get('ACTIVATION_WORD', 'activate')
+        deactivation_word = context.get('DEACTIVATION_WORD', 'stop')
+        logger.info(f"Initializing continuous listener with activation word: '{activation_word}' and deactivation word: '{deactivation_word}'")
+        continuous_listener = ContinuousListener(
+            activation_word=activation_word,
+            deactivation_word=deactivation_word
+        )
+        context['continuous_listener'] = continuous_listener
     
     # Initialize state
     state = {"last_processed_index": 0}
@@ -129,6 +142,10 @@ def setup_gradio_interface(context):
             # Start reflection after TTS is done
             self_reflection.start_reflection(new_history, lambda x: None)
             
+            # Signal the continuous listener that response is complete
+            if continuous_listener:
+                continuous_listener.signal_response_complete()
+                
             return (
                 new_history,  # chatbot
                 refs,        # references
@@ -142,6 +159,15 @@ def setup_gradio_interface(context):
             import traceback
             traceback.print_exc()
             return history, "", "", history, None
+
+    def handle_continuous_speech(text, history=None):
+        """Handle speech from continuous listener and update UI elements"""
+        if history is None:
+            history = chat_history.value
+            
+        # Update the input text box with the recognized speech
+        # This will be visible in the UI to show what was recognized
+        return text, f"Continuous listener recognized: {text}"
 
     def clear_interface(history):
         # Stop any ongoing reflection by setting the event
@@ -249,5 +275,23 @@ def setup_gradio_interface(context):
             ],
             queue=True
         )
+        
+        # Set up continuous listener if enabled
+        if continuous_listener:
+            # Set up callback for recognized speech
+            def on_speech_recognized(text):
+                # Update input box (just for visual feedback of what was recognized)
+                input_text.update(text)
+                speech_recognition_text.update(f"Continuous listener recognized: {text}")
+                
+                # Process the input just like a submitted text
+                handle_user_input(text, chat_history.value)
+                
+            # Set the callback
+            continuous_listener.callback = on_speech_recognized
+            
+            # Start the continuous listener
+            continuous_listener.start()
+            logger.info("Continuous listener started and ready")
 
     return interface
