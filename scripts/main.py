@@ -89,19 +89,15 @@ class VoiceChatbot:
         # Initialize self reflection
         self_reflection = SelfReflection(self.context)
         self.context['self_reflection'] = self_reflection
-        self_reflection.start_reflection_thread()
+        
+        # Don't start reflection thread here, we'll process reflections manually
+        # self_reflection.start_reflection_thread()
         
         # Initialize memory cleanup manager
         memory_cleanup = MemoryCleanupManager(self.context)
         self.context['memory_cleanup'] = memory_cleanup
         memory_cleanup.start_cleanup_thread()
-        if memory_cleanup.should_run_cleanup():
-            logger.info("Memory cleanup needed - will run shortly")
-        else:
-            last_cleanup = memory_cleanup._get_last_cleanup_from_logs()
-            if last_cleanup:
-                logger.info(f"Last memory cleanup was at {last_cleanup}")
-                
+        
         # Create and set up ingest watcher
         watcher = IngestWatcher(embedding_updater.update_embeddings)
         self.context['watcher'] = watcher
@@ -138,7 +134,9 @@ class VoiceChatbot:
             bot_msg = f"[{formatted_time}] Bot: {response}"
             
             # Update history
-            self.history.append((user_msg, bot_msg))
+            new_history = self.history.copy()
+            new_history.append((user_msg, bot_msg))
+            self.history = new_history
             
             # Log the interaction
             logger.info(f"User: {text}")
@@ -160,9 +158,16 @@ class VoiceChatbot:
             while self.tts_manager.is_processing:
                 time.sleep(0.1)
             
-            # Start reflection after TTS is done
+            # Process reflection asynchronously after TTS is done
+            # Use a separate thread to avoid blocking the main flow
             if 'self_reflection' in self.context:
-                self.context['self_reflection'].start_reflection(self.history, lambda x: None)
+                # Create a copy of history to prevent modifications affecting the conversation
+                history_copy = list(self.history)
+                threading.Thread(
+                    target=self._process_reflection_safely,
+                    args=(history_copy,),
+                    daemon=True
+                ).start()
             
             # Signal continuous listener that response is complete
             self.continuous_listener.signal_response_complete()
@@ -170,6 +175,15 @@ class VoiceChatbot:
         except Exception as e:
             logger.error(f"Error processing speech input: {e}", exc_info=True)
             self.continuous_listener.signal_response_complete()
+
+    def _process_reflection_safely(self, history_copy):
+        """Process reflection in a safe manner that doesn't affect the main conversation flow"""
+        try:
+            # Use a dummy callback that does nothing with the reflection output
+            self.context['self_reflection'].process_conversation(history_copy[-1:])
+            logger.info("Self-reflection processed successfully")
+        except Exception as e:
+            logger.error(f"Error in reflection processing: {e}", exc_info=True)
     
     def start(self):
         """Start the voice chatbot"""

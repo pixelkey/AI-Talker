@@ -5,7 +5,7 @@ import json
 import os
 from queue import Queue, Empty
 from chatbot_functions import chatbot_response
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable
 from datetime import datetime, timedelta
 import pytz
 import re
@@ -264,8 +264,10 @@ Respond with only a number between 0.0 and 1.0."""
             surprise_score = self._extract_score(score_response)
             logger.info(f"Extracted surprise score: {surprise_score}")
             
-            # Step 2: Check if web search is needed
-            search_needed, search_query = self._evaluate_web_search_need(conversation_text)
+            # Step 2: Check if web search is needed - BUT DON'T ACTUALLY PERFORM IT NOW
+            # This was causing a feedback loop - disable automatic web search during reflection
+            search_needed = False
+            search_query = None
             web_memory = None
             
             # Step 3: Determine memory type and expiry for conversation
@@ -619,18 +621,48 @@ Respond with only a number between 0.0 and 1.0."""
             # Return current time as fallback
             return datetime.now()
 
-    def start_reflection(self, messages, update_ui_callback=None):
-        """
-        Start the reflection process on recent messages.
-        Args:
-            messages: List of recent messages to reflect on
-            update_ui_callback: Optional callback to update the UI with reflection progress
-        """
-        if not self.reflection_thread or not self.reflection_thread.is_alive():
-            self.start_reflection_thread()
-        
-        # Queue the messages for processing
-        if messages:
-            self.queue_conversation(messages)
+    def start_reflection(self, history: List[Tuple[str, str]], callback: Callable[[str], None]) -> None:
+        """Start an asynchronous reflection on the conversation history"""
+        try:
+            # Prevent multiple reflections from starting at once
+            if self.is_reflecting:
+                logger.info("Reflection already in progress, skipping")
+                return
+                
+            # Set reflecting flag
+            self.is_reflecting = True
             
-        logger.info("Queued messages for reflection")
+            # Copy history to prevent modification
+            history_copy = list(history)
+            
+            # Skip if empty history or paused
+            if not history_copy or self.pause_event.is_set():
+                logger.info("No history or reflection paused, skipping reflection")
+                self.is_reflecting = False
+                return
+                
+            # Get the latest exchange only - just the last turn
+            if len(history_copy) > 0:
+                latest_exchange = [history_copy[-1]]
+            else:
+                latest_exchange = []
+                
+            # Process in a thread to not block main operation
+            def process_thread():
+                try:
+                    # Process the single latest exchange only
+                    self.process_conversation(latest_exchange)
+                    # IMPORTANT: Set callback to None to prevent the reflection from affecting the main flow
+                    # callback(result)  # DISABLED - Don't call back with reflection results
+                    
+                finally:
+                    self.is_reflecting = False
+                    
+            # Start thread
+            self.reflection_thread = threading.Thread(target=process_thread)
+            self.reflection_thread.daemon = True
+            self.reflection_thread.start()
+            
+        except Exception as e:
+            logger.error(f"Error starting reflection: {e}")
+            self.is_reflecting = False
