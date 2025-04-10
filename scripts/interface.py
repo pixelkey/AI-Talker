@@ -81,6 +81,8 @@ def setup_gradio_interface(context):
     context['watcher'] = watcher
 
     def parse_timestamp(timestamp):
+        if isinstance(timestamp, datetime):
+            return timestamp
         return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
 
     def handle_user_input(input_text, history):
