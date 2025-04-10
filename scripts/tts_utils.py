@@ -7,6 +7,10 @@ import tempfile
 import torchaudio
 import gc
 from typing import Tuple
+import simpleaudio as sa
+import numpy as np
+import threading
+import queue
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -23,6 +27,12 @@ class TTSManager:
         self._gpu_memory = self.get_gpu_memory()
         self._use_deepspeed = self._gpu_memory >= 4
         print(f"Initialized TTS Manager - GPU Memory: {self._gpu_memory:.1f}GB, DeepSpeed: {'Enabled' if self._use_deepspeed else 'Disabled'}")
+        
+        # Setup audio queue system
+        self.audio_queue = queue.Queue()
+        self.playback_thread = threading.Thread(target=self._process_audio_queue, daemon=True)
+        self.playback_thread.start()
+        
         self.initialize_tts()
 
     def clear_gpu_memory(self, reinitialize=False):
@@ -345,6 +355,50 @@ class TTSManager:
             
         return True, ""
 
+    def _process_audio_queue(self):
+        """Process audio samples from the queue, ensuring sequential playback."""
+        while True:
+            try:
+                audio_data = self.audio_queue.get()
+                if audio_data is None:  # Sentinel value to stop the thread
+                    break
+                    
+                # Ensure audio is within valid range [-1.0, 1.0] for int16 conversion
+                audio_data = np.clip(audio_data, -1.0, 1.0)
+                
+                # Convert to int16 and create audio object
+                audio_int16 = (audio_data * 32767).astype(np.int16)
+                
+                try:
+                    play_obj = sa.play_buffer(
+                        audio_int16,
+                        num_channels=1,
+                        bytes_per_sample=2,
+                        sample_rate=24000
+                    )
+                    print("Playing audio chunk")
+                    
+                    # Wait for this sample to finish before playing next
+                    play_obj.wait_done()
+                    print("Audio chunk finished playing")
+                except Exception as e:
+                    print(f"Error playing audio: {e}")
+            except Exception as e:
+                print(f"Error in audio queue processing: {e}")
+
+    def play_audio_async(self, audio_data):
+        """Queue audio data for playback without blocking the main process."""
+        self.audio_queue.put(audio_data)
+
+    def __del__(self):
+        """Clean up resources when the object is garbage collected."""
+        # Signal the playback thread to stop
+        if hasattr(self, 'audio_queue'):
+            self.audio_queue.put(None)
+            
+        # Clear any CUDA tensors
+        self.clear_gpu_memory()
+
     def text_to_speech(self, text):
         """Convert text to speech using Tortoise TTS with emotional prompting support.
         
@@ -353,6 +407,7 @@ class TTSManager:
         "[sad, slow and gentle] I miss you"
         "[professional, clear and confident] Let me explain"
         "[whispered, mysterious] I have a secret"
+        "[shouting, angry and energetic] I'm so angry!"
         
         These cues will influence the speech generation but won't be spoken.
         """
@@ -499,22 +554,52 @@ class TTSManager:
                         gen = gen.squeeze(0)
                     
                     print(f"Audio shape for chunk {i}: {gen.shape}")
+                    
+                    # Play the audio chunk asynchronously
+                    try:
+                        audio_data = gen.squeeze(0).cpu().numpy()
+                        print(f"Queueing audio chunk with shape: {audio_data.shape}")
+                        self.play_audio_async(audio_data)
+                    except Exception as e:
+                        print(f"Error queueing audio for playback: {e}")
+                    
                     all_audio.append(gen)
 
                 # Combine all audio chunks
-                print("\nCombining audio chunks...")
                 if all_audio:
-                    combined_audio = torch.cat(all_audio, dim=1)
-                    print(f"Audio chunks combined successfully, final shape: {combined_audio.shape}")
+                    try:
+                        # Check for tensor dimension mismatch
+                        shapes = [a.shape for a in all_audio]
+                        if len(set(s[1] for s in shapes)) > 1:
+                            # Tensors have different dimensions, need to pad
+                            max_len = max(s[1] for s in shapes)
+                            print(f"Audio chunks have different lengths, padding to {max_len}")
+                            padded_audio = []
+                            for audio in all_audio:
+                                if audio.shape[1] < max_len:
+                                    # Create padding
+                                    padding = torch.zeros(1, max_len - audio.shape[1], device=audio.device)
+                                    # Concatenate along dimension 1
+                                    padded = torch.cat([audio, padding], dim=1)
+                                    padded_audio.append(padded)
+                                else:
+                                    padded_audio.append(audio)
+                            final_audio = torch.cat(padded_audio, dim=0).mean(dim=0, keepdim=True)
+                        else:
+                            # All tensors have the same dimension, can concatenate directly
+                            final_audio = torch.cat(all_audio, dim=1)
+                    except RuntimeError as e:
+                        print(f"Error combining audio: {e}")
+                        # Fallback: use the last generated audio
+                        final_audio = all_audio[-1]
                 else:
-                    print("No audio generated")
-                    return None
+                    raise RuntimeError("No audio was generated")
 
                 # Create a temporary file
                 print("Saving audio to file...")
                 with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
                     temp_path = fp.name
-                    torchaudio.save(temp_path, combined_audio.cpu(), 24000)
+                    torchaudio.save(temp_path, final_audio.cpu(), 24000)
                     print(f"Audio saved to {temp_path}")
                     
                 return temp_path

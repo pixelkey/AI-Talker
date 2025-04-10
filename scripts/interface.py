@@ -165,7 +165,7 @@ def setup_gradio_interface(context):
                 audio_output = gr.Audio(
                     label="Response",
                     show_label=True,
-                    autoplay=True
+                    autoplay=False  # Disabled auto-play since we're playing locally
                 )
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=6):

@@ -21,6 +21,7 @@ nltk
 # Speech and audio (version sensitive)
 SpeechRecognition==3.10.1
 gTTS==2.4.0
+simpleaudio==1.0.4
 
 # Utilities (version flexible)
 watchdog
