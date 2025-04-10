@@ -4,6 +4,7 @@ deepspeed>=0.16.2
 
 # Core ML/AI packages (version sensitive)
 tortoise-tts==3.0.0
+progressbar2>=4.5.0
 langchain
 langchain-community
 langchain-openai

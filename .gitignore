@@ -45,3 +45,7 @@ temp/*
 
 # Tokenizer files
 tokenizers/*
+
+nltk_data
+
+*.deb
