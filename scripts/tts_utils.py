@@ -116,7 +116,7 @@ class TTSManager:
         elif gpu_memory >= 11.5:  # For GPUs with 12-16GB
             init_config["autoregressive_batch_size"] = 3
             gen_config.update({
-                "diffusion_iterations": 30,
+                "diffusion_iterations": 25,
                 "num_autoregressive_samples": 3
             })
         else:  # For GPUs with less than 12GB
