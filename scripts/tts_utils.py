@@ -619,5 +619,9 @@ class TTSManager:
             traceback.print_exc()
             return None
         finally:
+            # Clear GPU memory after TTS completion to prevent memory buildup
+            logger.info("Clearing GPU memory after TTS completion")
+            self.clear_gpu_memory(reinitialize=False)
+            
             self.is_processing = False  # Clear processing flag
             self.context['is_processing'] = False  # Clear processing flag

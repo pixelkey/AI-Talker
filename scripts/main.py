@@ -179,9 +179,10 @@ class VoiceChatbot:
     def _process_reflection_safely(self, history_copy):
         """Process reflection in a safe manner that doesn't affect the main conversation flow"""
         try:
-            # Use a dummy callback that does nothing with the reflection output
-            self.context['self_reflection'].process_conversation(history_copy[-1:])
-            logger.info("Self-reflection processed successfully")
+            # Use the start_reflection method with enhanced logging, passing the latest exchange
+            logger.info("Starting self-reflection processing...")
+            self.context['self_reflection'].start_reflection(history_copy)
+            logger.info("Self-reflection triggered successfully")
         except Exception as e:
             logger.error(f"Error in reflection processing: {e}", exc_info=True)
     

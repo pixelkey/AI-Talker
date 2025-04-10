@@ -254,35 +254,47 @@ Respond with only a number between 0.0 and 1.0."""
     def process_conversation(self, current_exchange: List[Tuple[str, str]]) -> None:
         """Process a conversation exchange and generate reflection"""
         try:
-            logger.info("Starting conversation processing")
+            logger.info("=== SELF REFLECTION: Starting conversation processing ===")
+            
+            # Set context flag to indicate we're in reflection mode
+            # This prevents reflection output from being treated as a new input
+            self.context['is_reflection'] = True
+            logger.info("SELF REFLECTION: Set is_reflection flag to True")
             
             # Format conversation history
             conversation_text = self._format_history(current_exchange)
+            logger.info(f"SELF REFLECTION: Formatted history for reflection with {len(current_exchange)} exchanges")
             
             # Step 1: Get surprise score
             score_response = self._get_llm_response(self.surprise_score_prompt, conversation_text)
             surprise_score = self._extract_score(score_response)
-            logger.info(f"Extracted surprise score: {surprise_score}")
+            logger.info(f"SELF REFLECTION: Extracted surprise score: {surprise_score}")
             
             # Step 2: Check if web search is needed - BUT DON'T ACTUALLY PERFORM IT NOW
             # This was causing a feedback loop - disable automatic web search during reflection
+            """
+            search_needed, search_query = self._evaluate_web_search_need(conversation_text)
+            web_memory = None
+            """
+            # Disable automatic web search during reflection to prevent feedback loop
             search_needed = False
             search_query = None
             web_memory = None
+            logger.info("SELF REFLECTION: Web search explicitly disabled to prevent feedback loops")
             
             # Step 3: Determine memory type and expiry for conversation
             memory_type, expiry = self._determine_memory_type(surprise_score)
-            logger.info(f"Determined memory type: {memory_type}, expiry: {expiry}")
+            logger.info(f"SELF REFLECTION: Determined memory type: {memory_type}, expiry: {expiry}")
             
             # Step 4: Process memory if score warrants retention
             memory_data = None
             
             if surprise_score >= self.surprise_thresholds['low']:
-                logger.info(f"Score {surprise_score} >= threshold {self.surprise_thresholds['low']}, processing memory")
+                logger.info(f"SELF REFLECTION: Score {surprise_score} >= threshold {self.surprise_thresholds['low']}, processing memory")
                 memory_prompt = self.memory_prompts[memory_type]
-                logger.info(f"Using {memory_type} memory prompt")
+                logger.info(f"SELF REFLECTION: Using {memory_type} memory prompt")
                 memory_data = self._get_llm_response(memory_prompt, conversation_text)
-                logger.info(f"Generated memory: {memory_data[:200]}...")
+                logger.info(f"SELF REFLECTION: Generated memory: {memory_data[:200]}...")
                 
                 # Save initial memory first
                 if memory_data:
@@ -313,11 +325,11 @@ Respond with only a number between 0.0 and 1.0."""
                     vector_store = self.context.get('vector_store')
                     if vector_store:
                         vector_store.add_documents([memory_doc])
-                        logger.info(f"Added conversation memory to embeddings")
+                        logger.info(f"SELF REFLECTION: Added conversation memory to embeddings")
                         
                         # Process web search if needed and score warrants it
                         if search_needed and search_query and surprise_score >= self.surprise_thresholds['low']:
-                            logger.info("Performing web search for: " + search_query)
+                            logger.info("SELF REFLECTION: Performing web search for: " + search_query)
                             
                             # Get web search results
                             from CognitiveProcessing import perform_web_search, get_detailed_web_content
@@ -341,7 +353,7 @@ Respond with only a number between 0.0 and 1.0."""
                                             'timestamp': current_time.isoformat()
                                         }
             else:
-                logger.info(f"Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
+                logger.info(f"SELF REFLECTION: Score {surprise_score} below threshold {self.surprise_thresholds['low']}, skipping memory processing")
 
             # Save web memory if it exists
             if web_memory:
@@ -367,7 +379,7 @@ Respond with only a number between 0.0 and 1.0."""
                 )
                 if vector_store:
                     vector_store.add_documents([web_doc])
-                    logger.info(f"Added web search memory to embeddings")
+                    logger.info(f"SELF REFLECTION: Added web search memory to embeddings")
                 
                 # Save updated vector store
                 if vector_store:
@@ -379,15 +391,19 @@ Respond with only a number between 0.0 and 1.0."""
                         os.environ["METADATA_PATH"],
                         os.environ["DOCSTORE_PATH"]
                     )
-                    logger.info("Saved updated vector store to disk")
+                    logger.info("SELF REFLECTION: Saved updated vector store to disk")
 
-            logger.info(f"Processed conversation: memory_type={memory_type}, score={surprise_score}, "
+            logger.info(f"SELF REFLECTION: Processed conversation: memory_type={memory_type}, score={surprise_score}, "
                        f"memory_length={len(memory_data) if memory_data else 0}, "
                        f"web_memory={'yes' if web_memory else 'no'}")
 
         except Exception as e:
-            logger.error(f"Error in conversation processing: {e}")
+            logger.error(f"SELF REFLECTION ERROR: Error in conversation processing: {e}")
             raise
+        finally:
+            # Reset the reflection flag when done, regardless of success or failure
+            self.context['is_reflection'] = False
+            logger.info("SELF REFLECTION: Reset is_reflection flag to False")
 
     def _clean_message(self, msg: str) -> str:
         """Clean a message by removing timestamps and extra formatting"""
@@ -439,12 +455,12 @@ Respond with only a number between 0.0 and 1.0."""
 
     def pause_reflection(self):
         """Pause the reflection process"""
-        logger.info("Self reflection paused")
+        logger.info("SELF REFLECTION: Self reflection paused")
         self.pause_event.set()
         
     def resume_reflection(self):
         """Resume the reflection process"""
-        logger.info("Self reflection resumed")
+        logger.info("SELF REFLECTION: Self reflection resumed")
         self.pause_event.clear()
 
     def _reflection_loop(self) -> None:
@@ -453,7 +469,7 @@ Respond with only a number between 0.0 and 1.0."""
             try:
                 # Check if we're paused
                 if self.pause_event.is_set():
-                    logger.debug("Self reflection is paused, sleeping...")
+                    logger.debug("SELF REFLECTION: Self reflection is paused, sleeping...")
                     time.sleep(1)
                     continue
                     
@@ -467,7 +483,7 @@ Respond with only a number between 0.0 and 1.0."""
                     continue
                     
             except Exception as e:
-                logger.error(f"Error in reflection loop: {str(e)}")
+                logger.error(f"SELF REFLECTION ERROR: Error in reflection loop: {str(e)}")
                 logger.error(traceback.format_exc())
                 self.is_reflecting = False
                 time.sleep(5)  # Wait a bit before retrying
@@ -479,7 +495,7 @@ Respond with only a number between 0.0 and 1.0."""
 
     def notify_user_input(self):
         """Notify that user input has been received"""
-        logger.info("Notifying about user input")
+        logger.info("SELF REFLECTION: Notifying about user input")
         self.stop_reflection_thread()  # Stop current reflection if any
         self.user_input_queue.put(None)  # Signal to stop current processing
 
@@ -503,13 +519,13 @@ Respond with only a number between 0.0 and 1.0."""
             'context': context or {}
         }
         self.history_manager.add_insight(insight_data)
-        logger.info(f"Stored new insight in category '{category}': {insight}")
+        logger.info(f"SELF REFLECTION: Stored new insight in category '{category}': {insight}")
 
     def _should_continue_reflecting(self, messages, reflection_history):
         """Determine if additional reflection is valuable"""
         # Check system resources first
         if is_gpu_too_hot():
-            logger.warning("GPU temperature too high, stopping reflection")
+            logger.warning("SELF REFLECTION: GPU temperature too high, stopping reflection")
             return False
             
         # Stop after max reflections
@@ -617,52 +633,59 @@ Respond with only a number between 0.0 and 1.0."""
             return parser.parse(timestamp_str)
             
         except Exception as e:
-            logging.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
+            logging.error(f"SELF REFLECTION ERROR: Error parsing timestamp {timestamp_str}: {str(e)}")
             # Return current time as fallback
             return datetime.now()
 
-    def start_reflection(self, history: List[Tuple[str, str]], callback: Callable[[str], None]) -> None:
+    def start_reflection(self, history: List[Tuple[str, str]], callback: Callable[[str], None] = None) -> None:
         """Start an asynchronous reflection on the conversation history"""
         try:
             # Prevent multiple reflections from starting at once
             if self.is_reflecting:
-                logger.info("Reflection already in progress, skipping")
+                logger.info("SELF REFLECTION: Reflection already in progress, skipping")
                 return
                 
             # Set reflecting flag
             self.is_reflecting = True
+            logger.info("=== SELF REFLECTION: Starting new reflection process ===")
             
             # Copy history to prevent modification
             history_copy = list(history)
             
             # Skip if empty history or paused
             if not history_copy or self.pause_event.is_set():
-                logger.info("No history or reflection paused, skipping reflection")
+                logger.info("SELF REFLECTION: No history or reflection paused, skipping reflection")
                 self.is_reflecting = False
                 return
                 
             # Get the latest exchange only - just the last turn
             if len(history_copy) > 0:
                 latest_exchange = [history_copy[-1]]
+                logger.info(f"SELF REFLECTION: Processing only the latest exchange: {latest_exchange[0][0][:50]}...")
             else:
                 latest_exchange = []
+                logger.info("SELF REFLECTION: No exchanges to process")
                 
             # Process in a thread to not block main operation
             def process_thread():
                 try:
+                    logger.info("SELF REFLECTION: Thread started for processing reflection")
                     # Process the single latest exchange only
                     self.process_conversation(latest_exchange)
+                    logger.info("SELF REFLECTION: Thread completed processing reflection")
                     # IMPORTANT: Set callback to None to prevent the reflection from affecting the main flow
                     # callback(result)  # DISABLED - Don't call back with reflection results
                     
                 finally:
                     self.is_reflecting = False
+                    logger.info("SELF REFLECTION: Reflection process completed")
                     
             # Start thread
             self.reflection_thread = threading.Thread(target=process_thread)
             self.reflection_thread.daemon = True
             self.reflection_thread.start()
+            logger.info("SELF REFLECTION: Reflection thread started")
             
         except Exception as e:
-            logger.error(f"Error starting reflection: {e}")
+            logger.error(f"SELF REFLECTION ERROR: Error starting reflection: {e}")
             self.is_reflecting = False

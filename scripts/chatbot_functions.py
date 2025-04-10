@@ -51,6 +51,13 @@ def chatbot_response(input_text, context_documents, context, history):
     Handle user input, generate a response, and update the conversation history.
     """
     logger = logging.getLogger(__name__)
+    
+    # Check if this is being called during self-reflection processing
+    # If so, skip to prevent feedback loops where reflection becomes input
+    if context.get('is_reflection', False):
+        logger.info("CHATBOT: Detected self-reflection processing, skipping input handling")
+        return history, None, "", ""
+        
     # Get current time from context and parse it
     current_time = context.get('current_time', '')
     try:
