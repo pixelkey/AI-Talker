@@ -2,7 +2,6 @@
 
 import gradio as gr
 from chatbot_functions import chatbot_response, clear_history, retrieve_and_format_references
-from chat_history import ChatHistoryManager
 from ingest_watcher import IngestWatcher
 from faiss_utils import save_faiss_index_metadata_and_docstore
 import os
@@ -17,6 +16,10 @@ from speech_recognition_utils import SpeechRecognizer
 from self_reflection import SelfReflection
 from queue import Queue
 from datetime import datetime
+from memory_cleanup import MemoryCleanupManager
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 def setup_gradio_interface(context):
     """
@@ -41,10 +44,6 @@ def setup_gradio_interface(context):
     # Initialize state
     state = {"last_processed_index": 0}
 
-    # Initialize chat manager once at startup
-    chat_manager = ChatHistoryManager()
-    context['chat_manager'] = chat_manager
-
     # Initialize vector store client and LLM client
     vector_store_client = VectorStoreClient(
         context['vector_store'],
@@ -63,12 +62,27 @@ def setup_gradio_interface(context):
     
     # Initialize self reflection
     self_reflection = SelfReflection(context)
+    context['self_reflection'] = self_reflection
+    self_reflection.start_reflection_thread()
+    
+    # Initialize memory cleanup manager
+    memory_cleanup = MemoryCleanupManager(context)
+    context['memory_cleanup'] = memory_cleanup
+    memory_cleanup.start_cleanup_thread()
+    if memory_cleanup.should_run_cleanup():
+        logger.info("Memory cleanup needed - will run shortly")
+    else:
+        last_cleanup = memory_cleanup._get_last_cleanup_from_logs()
+        if last_cleanup:
+            logger.info(f"Last memory cleanup was at {last_cleanup}")
     
     # Create the watcher but don't start it yet - we'll manually trigger updates
     watcher = IngestWatcher(embedding_updater.update_embeddings)
     context['watcher'] = watcher
 
     def parse_timestamp(timestamp):
+        if isinstance(timestamp, datetime):
+            return timestamp
         return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
 
     def handle_user_input(input_text, history):
@@ -81,9 +95,6 @@ def setup_gradio_interface(context):
             if not input_text or not input_text.strip():
                 return history, "", "", history, None
                 
-            # Get chat manager from context
-            chat_manager = context['chat_manager']
-
             # Set current time in context
             context['current_time'] = '2025-01-20T12:46:59+10:30'  # Using the actual current time with correct timezone
             
@@ -101,7 +112,6 @@ def setup_gradio_interface(context):
             
             # Update history with the new user and bot messages
             new_history = history + [(user_msg, bot_msg)]
-            chat_manager.save_history(new_history)
             
             # Generate speech for the response
             print("\nGenerating TTS response...")
@@ -111,9 +121,6 @@ def setup_gradio_interface(context):
             print(f"DEBUG - TTS text with emotion: {tts_text[:100]}...")
             audio_path = tts_manager.text_to_speech(tts_text)
             print("TTS generation complete")
-            
-            # Update embeddings in background
-            context['embedding_updater'].update_chat_embeddings_async(history, state)
             
             # Wait for TTS to fully complete before starting reflection
             while tts_manager.is_processing:
@@ -158,7 +165,7 @@ def setup_gradio_interface(context):
                 audio_output = gr.Audio(
                     label="Response",
                     show_label=True,
-                    autoplay=True
+                    autoplay=False  # Disabled auto-play since we're playing locally
                 )
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=6):
@@ -209,14 +216,16 @@ def setup_gradio_interface(context):
                 )
                 
         # Set up event handlers
+        chat_history = gr.State(value=[])
+        
         input_text.submit(
             handle_user_input,
-            inputs=[input_text, chatbot],
+            inputs=[input_text, chat_history],
             outputs=[
                 chatbot,
                 references,
                 input_text,
-                gr.State(value=[]),
+                chat_history,
                 audio_output
             ],
             queue=True
@@ -226,19 +235,16 @@ def setup_gradio_interface(context):
         audio_input.stop_recording(
             speech_recognizer.transcribe_audio,
             inputs=[audio_input],
-            outputs=[
-                input_text,
-                speech_recognition_text
-            ],
+            outputs=[input_text, speech_recognition_text],
             queue=False
         ).success(
             handle_user_input,
-            inputs=[input_text, chatbot],
+            inputs=[input_text, chat_history],
             outputs=[
                 chatbot,
                 references,
                 input_text,
-                gr.State(value=[]),
+                chat_history,
                 audio_output
             ],
             queue=True

@@ -19,10 +19,6 @@ def retrieve_and_format_references(input_text: str, context: Dict) -> Tuple[str,
     Returns:
         Tuple: references, filtered_docs, and context_documents.
     """
-    # Skip if web search is disabled
-    if context.get('skip_web_search', False):
-        return "", [], ""
-        
     # Normalize the user's input text
     normalized_input = normalize_text(input_text)
     logging.info(f"Normalized input: {normalized_input}")
@@ -64,12 +60,12 @@ def chatbot_response(input_text, context_documents, context, history):
         formatted_time = current_time
     
     # Format chat history with timestamps
-    formatted_history = format_chat_history(history, current_time)
+    formatted_history = format_messages(history, current_time)
     if formatted_history:
         formatted_history = f"Conversation History:\n{formatted_history}\n"
     
     # Check if web search is needed based on RAG results
-    web_search_results = {"needs_web_search": False, "web_results": ""} if context.get('skip_web_search', False) else determine_and_perform_web_search(input_text, context_documents or "", context)
+    web_search_results = determine_and_perform_web_search(input_text, context_documents or "", context)
     
     # Initialize final references and context
     final_references = []
@@ -80,19 +76,15 @@ def chatbot_response(input_text, context_documents, context, history):
         final_context.append(formatted_history)
     
     # Add web search results if they exist and haven't been included yet
-    if web_search_results["needs_web_search"] and web_search_results["web_results"]:
+    if web_search_results["web_results"]:
         web_ref = "Web Search Results:\n" + web_search_results["web_results"]
         
         # Add to final context for LLM
         final_context.append(web_ref)
         
-        # Format web search results for history display and saving
+        # Format web search results for history display
         timestamp_msg = f"[{formatted_time}]\nUser: {input_text}"
         history.append([timestamp_msg, f"[{formatted_time}]\nBot: {web_ref}"])
-        
-        # Save the updated history to persist web search results
-        if context.get("chat_manager"):
-            context["chat_manager"].save_history(history)
     
     # Add RAG results if they exist and aren't duplicates of what's in history
     if context_documents:
@@ -312,13 +304,25 @@ def build_local_prompt(system_prompt, history, context_documents, input_text):
     """
     prompt = f"{system_prompt}\n\n"
 
+    # Add conversation history
     if history:
         prompt += "Conversation History:\n"
         for user_msg, bot_msg in history:
             prompt += f"{user_msg}\n{bot_msg}\n"
         prompt += "\n"
 
-    prompt += f"Context Documents:\n{context_documents}\n\nUser Prompt:\n{input_text}"
+    # Add context documents only if they don't duplicate the conversation history
+    if context_documents and context_documents.strip() != "No relevant documents found.":
+        # Convert both to lowercase for comparison
+        history_text = prompt.lower()
+        context_text = context_documents.lower()
+        
+        # Only add context if it's not just repeating the conversation history
+        if "conversation history:" not in context_text or \
+           not all(msg[0].lower() in context_text and msg[1].lower() in context_text for msg in history):
+            prompt += f"Context Documents:\n{context_documents}\n\n"
+
+    prompt += f"User Prompt:\n{input_text}"
     return prompt
 
 def evaluate_rag_results(references: str, query: str, context: dict) -> str:
@@ -407,72 +411,88 @@ def clear_history(context, history):
         return history, "", ""
 
 def parse_timestamp(timestamp_str: str) -> datetime:
-    """
-    Parse an ISO format timestamp string into a datetime object.
-    Handles both basic ISO format and extended formats.
-    """
+    """Parse timestamp with flexible format handling"""
     try:
-        # Remove the 'T' separator if present
-        timestamp_str = timestamp_str.replace('T', ' ')
+        # Try different timestamp formats
+        formats = [
+            '%Y-%m-%d %H:%M:%S%z',  # Standard format with timezone
+            '%Y-%m-%d %H:%M:%S %z',  # With space before timezone
+            '%Y-%m-%d %H:%M:%S',     # Without timezone
+            '%Y-%m-%dT%H:%M:%S%z',   # ISO format with timezone
+            '%Y-%m-%dT%H:%M:%S',     # ISO format without timezone
+            '%Y-%m-%d %H:%M:%S%z',   # With timezone offset
+            '%Y-%m-%d %H:%M:%S+%z'   # With + before timezone
+        ]
         
-        # Split into date, time, and timezone parts
-        date_time = timestamp_str.rsplit('+', 1)[0].rsplit('-', 1)[0].strip()
+        # Clean up the timestamp string
+        timestamp_str = timestamp_str.strip()
         
-        # Parse the main part
-        dt = datetime.strptime(date_time, '%Y-%m-%d %H:%M:%S')
-        
-        # Handle timezone if present
+        # Handle timezone separately if it exists
         if '+' in timestamp_str:
-            # Extract hours and minutes from timezone
-            tz = timestamp_str.split('+')[1]
-            if ':' in tz:
-                h, m = map(int, tz.split(':'))
-            else:
-                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
-            dt = dt.replace(tzinfo=timezone(timedelta(hours=h, minutes=m)))
-        elif timestamp_str.count('-') > 2:  # Has negative timezone
-            tz = timestamp_str.split('-')[-1]
-            if ':' in tz:
-                h, m = map(int, tz.split(':'))
-            else:
-                h, m = int(tz[:2]), int(tz[2:]) if len(tz) > 2 else 0
-            dt = dt.replace(tzinfo=timezone(timedelta(hours=-h, minutes=-m)))
-            
-        return dt
+            main_part, tz_part = timestamp_str.rsplit('+', 1)
+            if ':' in tz_part:  # Handle +HH:MM format
+                tz_part = tz_part.replace(':', '')
+            timestamp_str = f"{main_part}+{tz_part}"
+        
+        # Try each format
+        for fmt in formats:
+            try:
+                return datetime.strptime(timestamp_str, fmt)
+            except ValueError:
+                continue
+                
+        # If none of the formats work, try parsing with dateutil
+        from dateutil import parser
+        return parser.parse(timestamp_str)
+        
     except Exception as e:
-        logging.error(f"Error parsing timestamp {timestamp_str}: {e}")
-        return datetime.now().astimezone()
+        logging.error(f"Error parsing timestamp {timestamp_str}: {str(e)}")
+        # Return current time as fallback
+        return datetime.now()
 
-def format_chat_history(history: List[str], current_time: str) -> str:
-    """
-    Format chat history with timestamps including weekday.
-    Args:
-        history: List of chat messages
-        current_time: Current timestamp from the user's machine
-    Returns:
-        Formatted chat history string
-    """
-    if not history:
+def format_messages(history, current_time: str) -> str:
+    """Format message history for context."""
+    try:
+        formatted_history = []
+        
+        # Convert history to list if it's not already
+        history_list = history if isinstance(history, list) else []
+        
+        # Take last 5 exchanges
+        recent_history = history_list[-5:] if history_list else []
+        
+        for i, exchange in enumerate(recent_history):
+            if isinstance(exchange, (list, tuple)) and len(exchange) == 2:
+                user_msg, bot_msg = exchange
+                # Extract actual message content without timestamps
+                user_content = extract_message_content(user_msg)
+                bot_content = extract_message_content(bot_msg)
+                formatted_history.append(f"User: {user_content}")
+                formatted_history.append(f"Assistant: {bot_content}")
+        
+        return "\n".join(formatted_history)
+    except Exception as e:
+        logging.error(f"Error formatting messages: {str(e)}")
         return ""
-    
-    formatted_history = []
-    for i, msg in enumerate(history):
-        # Get timestamp from message metadata if available, otherwise use current time
-        timestamp = msg.get('timestamp', current_time) if isinstance(msg, dict) else current_time
-        try:
-            # Parse the timestamp and format with weekday
-            dt = parse_timestamp(timestamp)
-            formatted_time = dt.strftime("%A, %Y-%m-%d %H:%M:%S %z")
-            role = "User" if i % 2 == 0 else "Bot"
-            content = msg['content'] if isinstance(msg, dict) else msg
-            formatted_history.append(f"[{formatted_time}] {role}: {content}")
-        except (ValueError, TypeError) as e:
-            # Fallback if timestamp parsing fails
-            role = "User" if i % 2 == 0 else "Bot"
-            content = msg['content'] if isinstance(msg, dict) else msg
-            formatted_history.append(f"[{timestamp}] {role}: {content}")
-    
-    return "\n".join(formatted_history)
+
+def extract_message_content(msg: str) -> str:
+    """Extract message content without timestamp and role prefix."""
+    try:
+        if not msg:
+            return ""
+            
+        # If message has timestamp, remove it
+        if msg.startswith('[') and ']' in msg:
+            msg = msg.split(']', 1)[1].strip()
+            
+        # Remove role prefix if present
+        if msg.startswith(('User:', 'Bot:', 'Assistant:')):
+            msg = msg.split(':', 1)[1].strip()
+            
+        return msg
+    except Exception as e:
+        logging.error(f"Error extracting message content: {str(e)}")
+        return msg
 
 def analyze_emotion_and_tone(text: str, context: Dict[str, Any]) -> str:
     """
@@ -492,6 +512,7 @@ Consider:
 
 Return ONLY the emotional cue in brackets, like: [happy and energetic] or [concerned and gentle]
 Keep it simple - use 2-3 descriptive words maximum.
+Do not include any explanations or notes.
 
 Text to analyze:
 {text}
@@ -516,10 +537,22 @@ Emotional Cue:"""
             emotion_cue = response['message']['content'].strip()
             logger.info(f"Local LLM emotion analysis response: {emotion_cue}")
             
-        # Ensure the response is properly formatted
-        if not emotion_cue.startswith('[') or not emotion_cue.endswith(']'):
-            logger.info(f"Reformatting emotion cue: {emotion_cue} -> [{emotion_cue}]")
-            emotion_cue = f"[{emotion_cue}]"
+        # Clean up the response
+        # Remove any explanatory text after the emotion cue
+        if '\n' in emotion_cue:
+            emotion_cue = emotion_cue.split('\n')[0].strip()
+            
+        # Remove any parenthetical notes
+        if '(' in emotion_cue:
+            emotion_cue = emotion_cue.split('(')[0].strip()
+            
+        # Extract just the emotion words if already in brackets
+        if emotion_cue.startswith('[') and ']' in emotion_cue:
+            emotion_cue = emotion_cue[1:emotion_cue.index(']')].strip()
+            
+        # Clean up any remaining brackets and ensure proper format
+        emotion_cue = emotion_cue.replace('[', '').replace(']', '').strip()
+        emotion_cue = f"[{emotion_cue}]"
             
         logger.info(f"Final emotion cue: {emotion_cue}")
         return emotion_cue

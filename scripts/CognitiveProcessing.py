@@ -64,22 +64,28 @@ def is_content_relevant(content: str, query: str, context: Dict) -> bool:
         return False
         
     start_time = time.time()
-    prompt = f"""Determine if this content has ANY relevance to answering the query.
-Consider content relevant if it:
-- Contains ANY information related to the query topic
-- Mentions ANY terms or concepts from the query
-- Could provide ANY context or background
-- Has ANY connection to the subject matter
-- Could be useful even if only tangentially related
+    prompt = f"""Determine if this content is meaningfully relevant to answering the query.
 
-Be very lenient - if there's ANY possible connection to the query, consider it relevant.
+Consider content relevant ONLY if it:
+- Contains specific information that directly answers the query
+- Provides important context or background knowledge needed to understand the topic
+- Has clear examples or explanations related to the main subject
+- Contains factual information that would help form a complete answer
+- Discusses key concepts or terms central to the query
+
+Consider content NOT relevant if it:
+- Only mentions terms from the query without meaningful context
+- Contains very general or tangential information
+- Is too vague or high-level to be useful
+- Only has superficial keyword matches
+- Would not contribute meaningful information to the answer
 
 Query: "{query}"
 
 Content:
 {content[:1000]}
 
-Respond ONLY with TRUE or FALSE. Default to TRUE if unsure."""
+Respond ONLY with TRUE or FALSE. Default to FALSE if unsure."""
     
     try:
         if config.MODEL_SOURCE == "openai":
@@ -532,122 +538,95 @@ def scrape_webpage(url: str) -> Optional[str]:
         logging.error(f"Error scraping {url}: {str(e)}")
         return None
 
-def evaluate_search_results(results: List[Dict], original_query: str, context: Dict) -> Tuple[bool, str, List[Dict]]:
+def evaluate_search_results(results: List[Dict], original_query: str, context: Dict) -> Tuple[bool, Optional[str], List[Dict]]:
     """
     Evaluate search results for relevance and suggest follow-up if needed.
     Returns: (needs_followup, followup_query, filtered_results)
     """
     if not results:
-        return False, "", []
-        
-    # Format results for LLM evaluation
+        return True, "Try a more general search", []
+
+    # Format results for LLM evaluation with comprehensive details
     results_str = "\n\n".join([
         f"Title: {r.get('title', '')}\n"
         f"URL: {r.get('link', '') or r.get('url', '') or r.get('href', '')}\n"
         f"Content: {r.get('body', '') or r.get('snippet', '')}"
-        for r in results
+        for r in results[:5]  # Limit to first 5 for evaluation
     ])
-    
-    prompt = f"""Evaluate these search results for relevance to the original query.
-Consider a result relevant if it contains information that helps answer the query, even if indirectly.
 
-Mark as NOT relevant only if:
-- The content is completely unrelated to the query topic
-- The information is severely outdated when current info is needed
-- The content is empty or contains no useful information
-- The content is purely promotional or spam
+    prompt = f"""Evaluate if these search results are relevant to the query.
+A result is relevant if it:
+- Contains information that helps answer the query
+- Provides useful context or background
+- Has current or factual information about the topic
+- Mentions specific details related to the query
 
-For news queries, consider content relevant if it:
-- Contains recent information about the query subject
-- Provides context or background that helps understand current events
-- Includes related developments or updates
-- Comes from reputable news sources
-
-Original Query: "{original_query}"
+Query: {original_query}
 
 Search Results:
 {results_str}
 
-Analyze the results and respond in this exact format:
-RELEVANT: [true/false]
-REASON: [Brief explanation why results are or aren't relevant]
-FOLLOW_UP: [If results aren't relevant or are incomplete, suggest a more specific search query. Otherwise, write 'none']
-FILTERED_INDICES: [List the indices (0-based) of relevant results]
+Respond in this format:
+RELEVANT: [true/false for each result, numbered]
+REASON: [brief reason for each]
+FOLLOWUP: [suggested followup query if results aren't ideal, or 'none' if good]
+FILTERED_INDEX: [list indices of relevant results, e.g. [0,2,4]]"""
 
-Example response:
-RELEVANT: true
-REASON: Results 0 and 2 contain recent news and updates about the query topic
-FOLLOW_UP: none
-FILTERED_INDICES: [0, 2]"""
-
-    if config.MODEL_SOURCE == "openai":
-        response = context["client"].chat.completions.create(
-            model=context["LLM_MODEL"],
-            messages=[
-                {"role": "system", "content": "You are a relevance filter. Your job is to only allow search results that help answer the user's query."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=150,
-            temperature=0
-        )
-        eval_text = response.choices[0].message.content.strip()
-    else:
-        response = context["client"].chat(
-            model=context["LLM_MODEL"],
-            messages=[
-                {"role": "system", "content": "You are a relevance filter. Your job is to only allow search results that help answer the user's query."},
-                {"role": "user", "content": prompt}
-            ],
-        )
-        eval_text = response['message']['content'].strip()
-    
-    # Add debug logging for LLM response
-    logging.info(f"LLM relevance evaluation response:\n{eval_text}")
-    
     try:
-        # Parse evaluation
-        eval_lines = eval_text.split('\n')
-        
-        # Extract all relevant indices from the response
-        all_indices = []
-        for line in eval_lines:
-            if line.startswith('FILTERED_INDICES:'):
-                indices_str = line.split(':', 1)[1].strip()
-                try:
-                    indices = [int(i.strip()) for i in indices_str.strip('[]').split(',') if i.strip()]
-                    all_indices.extend(indices)
-                except:
-                    logging.warning(f"Failed to parse indices from line: {line}")
-                    continue
-        
-        # Remove duplicates and sort
-        relevant_indices = sorted(list(set(all_indices)))
-        
-        # Check if we found any relevant results
-        is_relevant = len(relevant_indices) > 0
-        
-        # Get follow-up query from any FOLLOW_UP line
-        follow_up_lines = [line for line in eval_lines if line.startswith('FOLLOW_UP:')]
-        follow_up = follow_up_lines[0].split(':', 1)[1].strip() if follow_up_lines else "none"
-        
-        # Filter results by relevant indices
-        filtered_results = [results[i] for i in relevant_indices if i < len(results)]
-        
-        logging.info(f"Web search relevance check - Query: '{original_query[:50]}...' - Found {len(filtered_results)} relevant results")
+        if config.MODEL_SOURCE == "openai":
+            response = context["client"].chat.completions.create(
+                model=context["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500,
+                temperature=0.1
+            )
+            eval_response = response.choices[0].message.content
+        else:
+            response = context["client"].chat(
+                model=context["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}]
+            )
+            eval_response = response['message']['content']
+
+        logger.info("LLM relevance evaluation response:\n" + eval_response)
+
+        # Extract filtered indices
+        filtered_index_match = re.search(r'FILTERED_INDEX:\s*\[([\d\s,]*)\]', eval_response)
+        if filtered_index_match:
+            try:
+                filtered_indices = [int(i.strip()) for i in filtered_index_match.group(1).split(',') if i.strip()]
+                # Always include at least one result if we found any
+                if not filtered_indices and results:
+                    filtered_indices = [0]
+                filtered_results = [results[i] for i in filtered_indices if i < len(results)]
+            except (ValueError, IndexError) as e:
+                logger.error(f"Error parsing filtered indices: {str(e)}")
+                filtered_results = results[:3]  # Default to first 3 results
+        else:
+            filtered_results = results[:3]  # Default to first 3 results if no indices found
+
+        # Extract followup suggestion
+        followup_match = re.search(r'FOLLOWUP:\s*(.+?)(?:\n|$)', eval_response)
+        followup = followup_match.group(1).strip() if followup_match else None
+        needs_followup = followup and followup.lower() != 'none'
+
+        # Return at least some results
+        if not filtered_results and results:
+            logger.info("No results passed relevance filter, using first result as fallback")
+            filtered_results = [results[0]]
+            needs_followup = True
+            followup = "Try a more specific search"
+
+        # Log URLs for debugging
         if filtered_results:
-            logging.info(f"Relevant result URLs: {[r.get('link', '') or r.get('url', '') for r in filtered_results]}")
-        
-        needs_followup = not is_relevant and follow_up.lower() != 'none'
-        return needs_followup, follow_up, filtered_results
-        
+            logger.info(f"Web search relevance check - Query: '{original_query[:50]}...' - Found {len(filtered_results)} relevant results")
+            logger.info(f"Relevant result URLs: {[r.get('link', '') or r.get('url', '') or r.get('href', '') for r in filtered_results]}")
+
+        return needs_followup, followup if needs_followup else None, filtered_results
+
     except Exception as e:
-        logging.error(f"Error parsing evaluation response: {str(e)}")
-        # On error, return no results
-        filtered_results = []
-        is_relevant = False
-        follow_up = "none"
-        needs_followup = not is_relevant and follow_up.lower() != 'none'
-        return needs_followup, follow_up, filtered_results
+        logger.error(f"Error in search result evaluation: {str(e)}")
+        return False, None, results[:3]  # Return first 3 results on error
 
 def evaluate_content_relevance(content: str, query: str, context: Dict) -> Tuple[bool, str]:
     """
@@ -701,7 +680,7 @@ EXCERPT: [If relevant, include the most pertinent information here. Otherwise wr
     
     return is_relevant, excerpt
 
-def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict, max_pages: int = 3, timeout_seconds: int = 30) -> str:
+def get_detailed_web_content(search_results: List[Dict], query: str, context: Dict) -> str:
     """
     Get detailed content from web pages based on search results.
     Uses ThreadPoolExecutor for parallel processing with improved concurrency.
@@ -714,14 +693,14 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
     
     def is_timed_out() -> bool:
         elapsed = time.time() - start_time
-        if elapsed >= timeout_seconds:
+        if elapsed >= 30:
             logging.warning(f"Web search timed out after {elapsed:.1f} seconds")
             return True
         return False
 
     # First process any results that already have fresh content
     for result in search_results:
-        if len(all_content) >= max_pages or is_timed_out():
+        if len(all_content) >= 3 or is_timed_out():
             break
             
         url = result.get('url') or result.get('link')
@@ -764,10 +743,10 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
         return None
 
     # Only scrape additional URLs if we need more content
-    if len(all_content) < max_pages and not is_timed_out():
+    if len(all_content) < 3 and not is_timed_out():
         remaining_urls = []
         for result in search_results:
-            if len(remaining_urls) >= (max_pages - len(all_content)) * 2:  # Get 2x the URLs we still need
+            if len(remaining_urls) >= (3 - len(all_content)) * 2:  # Get 2x the URLs we still need
                 break
             url = result.get('url') or result.get('link')
             if url and url not in processed_urls and url.startswith(('http://', 'https://')):
@@ -779,7 +758,7 @@ def get_detailed_web_content(search_results: List[Dict], query: str, context: Di
                 future_to_url = {executor.submit(process_single_url, url, idx): url for url, idx in remaining_urls}
                 
                 for future in concurrent.futures.as_completed(future_to_url):
-                    if is_timed_out() or len(all_content) >= max_pages:
+                    if is_timed_out() or len(all_content) >= 3:
                         for f in future_to_url:
                             f.cancel()
                         break
@@ -848,6 +827,13 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
             "needs_web_search": False,
             "web_results": ""
         }
+    
+    # Early return if web search is disabled
+    if context.get('skip_web_search', False):
+        return {
+            "needs_web_search": False,
+            "web_results": ""
+        }
         
     result = {
         "needs_web_search": False,
@@ -859,10 +845,18 @@ def determine_and_perform_web_search(query: str, rag_summary: str, context: Dict
         recent_messages = []
         if "memory" in context:
             try:
-                chat_history = context["memory"].chat_memory.messages[-5:]
-                recent_messages = [f"{msg.type}: {msg.content}" for msg in chat_history]
-            except:
-                logging.warning("Could not retrieve chat history")
+                memory = context["memory"]
+                if hasattr(memory, "chat_memory") and hasattr(memory.chat_memory, "messages"):
+                    chat_history = memory.chat_memory.messages[-5:]
+                elif hasattr(memory, "buffer"):
+                    # Handle ConversationBufferMemory
+                    chat_history = [{"type": "human" if i % 2 == 0 else "assistant", "content": msg} 
+                                  for i, msg in enumerate(memory.buffer.split('\n')[-10:] if memory.buffer else [])]
+                else:
+                    chat_history = []
+                recent_messages = [f"{msg['type']}: {msg['content']}" for msg in chat_history]
+            except Exception as e:
+                logging.warning(f"Could not retrieve chat history: {str(e)}")
         
         # First, check for explicit search requests or real-time information needs
         explicit_search_terms = ["search", "look up", "find", "what is", "how to", "current", "latest", "news", "weather", "price", "status"]
@@ -928,7 +922,7 @@ NO Web Search Needed For:
 
 Current Query: {query}
 RAG Summary: {rag_summary if rag_summary else "No relevant information found in RAG"}
-Recent Messages: {recent_messages[-3:] if recent_messages else "No recent messages"}
+Recent Messages: {recent_messages}
 
 Respond in this format:
 NEEDS_SEARCH: [YES/NO]
@@ -1062,10 +1056,14 @@ SEARCH_QUERY: new york weather forecast"""
         if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
-            # Create DDGS instance
-            with DDGS() as ddgs:
-                search_results = perform_web_search(search_query, ddgs)
-                
+            # Get DDGS instance from context
+            ddgs = context.get('ddgs')
+            if not ddgs:
+                # Create new instance if not in context
+                ddgs = DDGS()
+            
+            search_results = perform_web_search(search_query, ddgs)
+            
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
             # Initialize filtered results

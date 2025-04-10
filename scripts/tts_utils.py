@@ -6,6 +6,14 @@ import logging
 import tempfile
 import torchaudio
 import gc
+from typing import Tuple
+import simpleaudio as sa
+import numpy as np
+import threading
+import queue
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class TTSManager:
     def __init__(self, context):
@@ -19,6 +27,12 @@ class TTSManager:
         self._gpu_memory = self.get_gpu_memory()
         self._use_deepspeed = self._gpu_memory >= 4
         print(f"Initialized TTS Manager - GPU Memory: {self._gpu_memory:.1f}GB, DeepSpeed: {'Enabled' if self._use_deepspeed else 'Disabled'}")
+        
+        # Setup audio queue system
+        self.audio_queue = queue.Queue()
+        self.playback_thread = threading.Thread(target=self._process_audio_queue, daemon=True)
+        self.playback_thread.start()
+        
         self.initialize_tts()
 
     def clear_gpu_memory(self, reinitialize=False):
@@ -99,10 +113,10 @@ class TTSManager:
                 "diffusion_iterations": 50,
                 "num_autoregressive_samples": 3
             })
-        elif gpu_memory >= 12:  # For GPUs with 12-16GB
+        elif gpu_memory >= 11.5:  # For GPUs with 12-16GB
             init_config["autoregressive_batch_size"] = 3
             gen_config.update({
-                "diffusion_iterations": 40,
+                "diffusion_iterations": 25,
                 "num_autoregressive_samples": 3
             })
         else:  # For GPUs with less than 12GB
@@ -111,8 +125,8 @@ class TTSManager:
                 "half": True  # Enable half-precision for low memory GPUs
             })
             gen_config.update({
-                "diffusion_iterations": 40,
-                "num_autoregressive_samples": 2
+                "diffusion_iterations": 20,
+                "num_autoregressive_samples": 1
             })
 
         return init_config, gen_config
@@ -316,6 +330,75 @@ class TTSManager:
                 return self.tts.tts_with_preset(text, **conservative_kwargs)
             raise
 
+    def validate_brackets(self, text: str) -> Tuple[bool, str]:
+        """
+        Validate that all emotion/style brackets are properly paired.
+        Returns (is_valid, error_message)
+        """
+        # If no opening bracket, text is valid
+        if '[' not in text:
+            return True, ""
+            
+        # Text must start with [ if it contains one
+        if not text.startswith('['):
+            return False, "Emotion/style markers must be at the start of text"
+            
+        # Find matching closing bracket
+        end_bracket = text.find(']')
+        if end_bracket == -1:
+            return False, "Missing closing bracket ']' for emotion/style marker"
+            
+        # Check for any additional brackets
+        remaining_text = text[end_bracket + 1:]
+        if '[' in remaining_text or ']' in remaining_text:
+            return False, "Only one emotion/style marker allowed at the start of text"
+            
+        return True, ""
+
+    def _process_audio_queue(self):
+        """Process audio samples from the queue, ensuring sequential playback."""
+        while True:
+            try:
+                audio_data = self.audio_queue.get()
+                if audio_data is None:  # Sentinel value to stop the thread
+                    break
+                    
+                # Ensure audio is within valid range [-1.0, 1.0] for int16 conversion
+                audio_data = np.clip(audio_data, -1.0, 1.0)
+                
+                # Convert to int16 and create audio object
+                audio_int16 = (audio_data * 32767).astype(np.int16)
+                
+                try:
+                    play_obj = sa.play_buffer(
+                        audio_int16,
+                        num_channels=1,
+                        bytes_per_sample=2,
+                        sample_rate=24000
+                    )
+                    print("Playing audio chunk")
+                    
+                    # Wait for this sample to finish before playing next
+                    play_obj.wait_done()
+                    print("Audio chunk finished playing")
+                except Exception as e:
+                    print(f"Error playing audio: {e}")
+            except Exception as e:
+                print(f"Error in audio queue processing: {e}")
+
+    def play_audio_async(self, audio_data):
+        """Queue audio data for playback without blocking the main process."""
+        self.audio_queue.put(audio_data)
+
+    def __del__(self):
+        """Clean up resources when the object is garbage collected."""
+        # Signal the playback thread to stop
+        if hasattr(self, 'audio_queue'):
+            self.audio_queue.put(None)
+            
+        # Clear any CUDA tensors
+        self.clear_gpu_memory()
+
     def text_to_speech(self, text):
         """Convert text to speech using Tortoise TTS with emotional prompting support.
         
@@ -324,6 +407,7 @@ class TTSManager:
         "[sad, slow and gentle] I miss you"
         "[professional, clear and confident] Let me explain"
         "[whispered, mysterious] I have a secret"
+        "[shouting, angry and energetic] I'm so angry!"
         
         These cues will influence the speech generation but won't be spoken.
         """
@@ -331,101 +415,83 @@ class TTSManager:
         logger.info("\n=== Starting text_to_speech ===")
         
         self.is_processing = True  # Set processing flag
+        self.context['is_processing'] = True  # Set processing flag
+        
         try:
-            # Only ensure TTS is initialized at startup, not every call
-            if self.tts is None:
-                self.ensure_tts_initialized()
-            
-            if self.tts is None:
-                raise RuntimeError("Failed to initialize TTS system")
+            # Pause any background processes that use GPU
+            if 'self_reflection' in self.context:
+                logger.info("Pausing self reflection during TTS")
+                self.context['self_reflection'].pause_reflection()
+            if 'memory_cleanup' in self.context:
+                logger.info("Pausing memory cleanup during TTS")
+                self.context['memory_cleanup'].pause_cleanup()
+
+            try:
+                # Only ensure TTS is initialized at startup, not every call
+                if self.tts is None:
+                    self.ensure_tts_initialized()
                 
-            # Extract style cue if present
-            style_cue = ""
-            text_to_speak = text
-            
-            # Look for style cue in brackets at the start
-            if text.startswith("["):
-                end_bracket = text.find("]")
-                if end_bracket != -1:
-                    style_cue = text[1:end_bracket].strip()
-                    text_to_speak = text[end_bracket + 1:].strip()
-                    logger.info(f"Detected style cue: '{style_cue}'")
-                    logger.info(f"Text to speak: '{text_to_speak[:100]}...'")
-            else:
-                logger.info("No style cue detected in text")
-            
-            # Process the style cue into an enhanced prompt and temperature
-            emotion_prompt, temperature = self.process_style_cue(style_cue)
-            
-            print("Processing text chunks...")
-            # Split long text into smaller chunks at sentence boundaries
-            sentences = text_to_speak.split('.')
-            max_chunk_length = 100  # Maximum characters per chunk
-            chunks = []
-            current_chunk = ""
-            
-            for sentence in sentences:
-                if len(current_chunk) + len(sentence) < max_chunk_length:
-                    current_chunk += sentence + "."
+                if self.tts is None:
+                    raise RuntimeError("Failed to initialize TTS system")
+                    
+                # Validate brackets first
+                is_valid, error_msg = self.validate_brackets(text)
+                if not is_valid:
+                    raise ValueError(f"Invalid emotion/style marker: {error_msg}")
+                
+                # Extract style cue if present
+                style_cue = ""
+                text_to_speak = text
+                
+                # Look for style cue in brackets at the start
+                if text.startswith("["):
+                    end_bracket = text.find("]")
+                    if end_bracket != -1:
+                        style_cue = text[1:end_bracket].strip()
+                        text_to_speak = text[end_bracket + 1:].strip()
+                        logger.info(f"Detected style cue: '{style_cue}'")
+                        logger.info(f"Text to speak: '{text_to_speak[:100]}...'")
                 else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sentence + "."
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            
-            print(f"Created {len(chunks)} chunks: {chunks}")
-            
-            # Process each chunk
-            all_audio = []
-            for i, chunk in enumerate(chunks, 1):
-                print(f"\nProcessing chunk {i}/{len(chunks)}: '{chunk}'")
-                if not chunk.strip():
-                    print(f"Skipping empty chunk {i}")
-                    continue
+                    logger.info("No style cue detected in text")
                 
-                print("Generating autoregressive samples...")
-                try:
-                    # Add enhanced emotion prompt back to each chunk if it exists
-                    chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
-                    logger.info(f"Processing chunk with emotion prompt: '{chunk_with_emotion}'")
+                # Process the style cue into an enhanced prompt and temperature
+                emotion_prompt, temperature = self.process_style_cue(style_cue)
+                
+                print("Processing text chunks...")
+                # Split long text into smaller chunks at sentence boundaries
+                sentences = text_to_speak.split('.')
+                max_chunk_length = 100  # Maximum characters per chunk
+                chunks = []
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) < max_chunk_length:
+                        current_chunk += sentence + "."
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        current_chunk = sentence + "."
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                
+                print(f"Created {len(chunks)} chunks: {chunks}")
+                
+                # Process each chunk
+                all_audio = []
+                for i, chunk in enumerate(chunks, 1):
+                    print(f"\nProcessing chunk {i}/{len(chunks)}: '{chunk}'")
+                    if not chunk.strip():
+                        print(f"Skipping empty chunk {i}")
+                        continue
                     
-                    # Get optimal settings based on GPU memory
-                    _, gpu_config = self.get_optimal_tts_config()
-                    
-                    gen = self.safe_tts_with_preset(
-                        chunk_with_emotion,
-                        voice_samples=self.voice_samples,
-                        conditioning_latents=self.conditioning_latents,
-                        preset='fast',
-                        use_deterministic_seed=True,
-                        num_autoregressive_samples=gpu_config.get('num_autoregressive_samples', 2),
-                        diffusion_iterations=gpu_config.get('diffusion_iterations', 40),
-                        cond_free=True,
-                        cond_free_k=2.0,
-                        temperature=temperature,
-                        length_penalty=gpu_config.get('length_penalty', 1.0),
-                        repetition_penalty=gpu_config.get('repetition_penalty', 2.0),
-                        top_k=gpu_config.get('top_k', None),
-                        top_p=gpu_config.get('top_p', 0.8),
-                        max_mel_tokens=500
-                    )
-                    print(f"Generated audio for chunk {i}")
-                except RuntimeError as e:
-                    print(f"Error generating audio for chunk {i}: {e}")
-                    if "expected a non-empty list of Tensors" in str(e) or "out of memory" in str(e):
-                        print("Retrying with different configuration...")
-                        # Try again with modified settings and emotion
+                    print("Generating autoregressive samples...")
+                    try:
+                        # Add enhanced emotion prompt back to each chunk if it exists
                         chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
+                        logger.info(f"Processing chunk with emotion prompt: '{chunk_with_emotion}'")
                         
-                        # Use a slightly lower temperature for retry
-                        retry_temperature = self.determine_temperature("", is_retry=True)
-                        logger.info(f"Retry attempt using temperature: {retry_temperature}")
-                        
-                        # Get optimal settings for retry with slightly reduced values
+                        # Get optimal settings based on GPU memory
                         _, gpu_config = self.get_optimal_tts_config()
-                        retry_samples = max(1, gpu_config.get('num_autoregressive_samples', 1) - 1)
-                        retry_iterations = max(20, gpu_config.get('diffusion_iterations', 30) - 10)
                         
                         gen = self.safe_tts_with_preset(
                             chunk_with_emotion,
@@ -433,46 +499,119 @@ class TTSManager:
                             conditioning_latents=self.conditioning_latents,
                             preset='fast',
                             use_deterministic_seed=True,
-                            num_autoregressive_samples=retry_samples,
-                            diffusion_iterations=retry_iterations,
+                            num_autoregressive_samples=gpu_config.get('num_autoregressive_samples', 2),
+                            diffusion_iterations=gpu_config.get('diffusion_iterations', 40),
                             cond_free=True,
                             cond_free_k=2.0,
-                            temperature=retry_temperature,
+                            temperature=temperature,
                             length_penalty=gpu_config.get('length_penalty', 1.0),
                             repetition_penalty=gpu_config.get('repetition_penalty', 2.0),
                             top_k=gpu_config.get('top_k', None),
                             top_p=gpu_config.get('top_p', 0.8),
                             max_mel_tokens=500
                         )
-                        print("Retry successful")
-                    else:
-                        raise
-                
-                if isinstance(gen, tuple):
-                    gen = gen[0]
-                if len(gen.shape) == 3:
-                    gen = gen.squeeze(0)
-                
-                print(f"Audio shape for chunk {i}: {gen.shape}")
-                all_audio.append(gen)
+                        print(f"Generated audio for chunk {i}")
+                    except RuntimeError as e:
+                        print(f"Error generating audio for chunk {i}: {e}")
+                        if "expected a non-empty list of Tensors" in str(e) or "out of memory" in str(e):
+                            print("Retrying with different configuration...")
+                            # Try again with modified settings and emotion
+                            chunk_with_emotion = f"[{emotion_prompt}] {chunk}" if emotion_prompt else chunk
+                            
+                            # Use a slightly lower temperature for retry
+                            retry_temperature = self.determine_temperature("", is_retry=True)
+                            logger.info(f"Retry attempt using temperature: {retry_temperature}")
+                            
+                            # Get optimal settings for retry with slightly reduced values
+                            _, gpu_config = self.get_optimal_tts_config()
+                            retry_samples = max(1, gpu_config.get('num_autoregressive_samples', 1) - 1)
+                            retry_iterations = max(20, gpu_config.get('diffusion_iterations', 30) - 10)
+                            
+                            gen = self.safe_tts_with_preset(
+                                chunk_with_emotion,
+                                voice_samples=self.voice_samples,
+                                conditioning_latents=self.conditioning_latents,
+                                preset='fast',
+                                use_deterministic_seed=True,
+                                num_autoregressive_samples=retry_samples,
+                                diffusion_iterations=retry_iterations,
+                                cond_free=True,
+                                cond_free_k=2.0,
+                                temperature=retry_temperature,
+                                length_penalty=gpu_config.get('length_penalty', 1.0),
+                                repetition_penalty=gpu_config.get('repetition_penalty', 2.0),
+                                top_k=gpu_config.get('top_k', None),
+                                top_p=gpu_config.get('top_p', 0.8),
+                                max_mel_tokens=500
+                            )
+                            print("Retry successful")
+                        else:
+                            raise
+                    
+                    if isinstance(gen, tuple):
+                        gen = gen[0]
+                    if len(gen.shape) == 3:
+                        gen = gen.squeeze(0)
+                    
+                    print(f"Audio shape for chunk {i}: {gen.shape}")
+                    
+                    # Play the audio chunk asynchronously
+                    try:
+                        audio_data = gen.squeeze(0).cpu().numpy()
+                        print(f"Queueing audio chunk with shape: {audio_data.shape}")
+                        self.play_audio_async(audio_data)
+                    except Exception as e:
+                        print(f"Error queueing audio for playback: {e}")
+                    
+                    all_audio.append(gen)
 
-            # Combine all audio chunks
-            print("\nCombining audio chunks...")
-            if all_audio:
-                combined_audio = torch.cat(all_audio, dim=1)
-                print(f"Audio chunks combined successfully, final shape: {combined_audio.shape}")
-            else:
-                print("No audio generated")
-                return None
+                # Combine all audio chunks
+                if all_audio:
+                    try:
+                        # Check for tensor dimension mismatch
+                        shapes = [a.shape for a in all_audio]
+                        if len(set(s[1] for s in shapes)) > 1:
+                            # Tensors have different dimensions, need to pad
+                            max_len = max(s[1] for s in shapes)
+                            print(f"Audio chunks have different lengths, padding to {max_len}")
+                            padded_audio = []
+                            for audio in all_audio:
+                                if audio.shape[1] < max_len:
+                                    # Create padding
+                                    padding = torch.zeros(1, max_len - audio.shape[1], device=audio.device)
+                                    # Concatenate along dimension 1
+                                    padded = torch.cat([audio, padding], dim=1)
+                                    padded_audio.append(padded)
+                                else:
+                                    padded_audio.append(audio)
+                            final_audio = torch.cat(padded_audio, dim=0).mean(dim=0, keepdim=True)
+                        else:
+                            # All tensors have the same dimension, can concatenate directly
+                            final_audio = torch.cat(all_audio, dim=1)
+                    except RuntimeError as e:
+                        print(f"Error combining audio: {e}")
+                        # Fallback: use the last generated audio
+                        final_audio = all_audio[-1]
+                else:
+                    raise RuntimeError("No audio was generated")
 
-            # Create a temporary file
-            print("Saving audio to file...")
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
-                temp_path = fp.name
-                torchaudio.save(temp_path, combined_audio.cpu(), 24000)
-                print(f"Audio saved to {temp_path}")
-                
-            return temp_path
+                # Create a temporary file
+                print("Saving audio to file...")
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
+                    temp_path = fp.name
+                    torchaudio.save(temp_path, final_audio.cpu(), 24000)
+                    print(f"Audio saved to {temp_path}")
+                    
+                return temp_path
+
+            finally:
+                # Resume background processes
+                if 'self_reflection' in self.context:
+                    logger.info("Resuming self reflection after TTS")
+                    self.context['self_reflection'].resume_reflection()
+                if 'memory_cleanup' in self.context:
+                    logger.info("Resuming memory cleanup after TTS")
+                    self.context['memory_cleanup'].resume_cleanup()
 
         except Exception as e:
             print(f"Error in text-to-speech: {str(e)}")
@@ -481,3 +620,4 @@ class TTSManager:
             return None
         finally:
             self.is_processing = False  # Clear processing flag
+            self.context['is_processing'] = False  # Clear processing flag
