@@ -22,6 +22,7 @@ nltk
 SpeechRecognition==3.10.1
 gTTS==2.4.0
 simpleaudio==1.0.4
+PyAudio==0.2.13
 
 # Utilities (version flexible)
 watchdog
