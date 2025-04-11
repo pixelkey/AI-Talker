@@ -61,7 +61,7 @@ class ContinuousListener:
         self.last_response_time = 0        # Timestamp for the last response
         
         # Sound effect paths
-        self.sound_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "sounds")
+        self.sound_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds")
         self.activation_sound = os.path.join(self.sound_dir, "activation.wav")
         self.deactivation_sound = os.path.join(self.sound_dir, "deactivation.wav")
         self.recognition_sound = os.path.join(self.sound_dir, "recognition.wav")
@@ -366,6 +366,13 @@ class ContinuousListener:
         try:
             if os.path.exists(self.activation_sound):
                 logger.info("Playing activation sound")
+                # Add the activation message to recent_tts_phrases to prevent recognition
+                activation_message = "Hello, I'm listening. How can I help you?"
+                self.recent_tts_phrases.append(activation_message.lower())
+                if len(self.recent_tts_phrases) > self.max_recent_phrases:
+                    self.recent_tts_phrases.pop(0)
+                
+                # Play the sound file
                 data, samplerate = sf.read(self.activation_sound)
                 sd.play(data, samplerate)
             else:
@@ -383,6 +390,13 @@ class ContinuousListener:
         try:
             if os.path.exists(self.deactivation_sound):
                 logger.info("Playing deactivation sound")
+                # Add the deactivation message to recent_tts_phrases to prevent recognition
+                deactivation_message = "I'll stop listening now."
+                self.recent_tts_phrases.append(deactivation_message.lower())
+                if len(self.recent_tts_phrases) > self.max_recent_phrases:
+                    self.recent_tts_phrases.pop(0)
+                
+                # Play the sound file
                 data, samplerate = sf.read(self.deactivation_sound)
                 sd.play(data, samplerate)
             else:
@@ -390,7 +404,7 @@ class ContinuousListener:
                 logger.info("Deactivation sound file not found, generating beep")
                 samplerate = 44100
                 t = np.linspace(0, 0.3, int(0.3 * samplerate), False)
-                tone = 0.3 * np.sin(2 * np.pi * 440 * t)  # A4 tone
+                tone = 0.2 * np.sin(2 * np.pi * 440 * t)  # A4 tone
                 sd.play(tone, samplerate)
         except Exception as e:
             logger.error(f"Error playing deactivation sound: {e}")
@@ -400,6 +414,13 @@ class ContinuousListener:
         try:
             if os.path.exists(self.recognition_sound):
                 logger.info("Playing recognition sound")
+                # Add the recognition message to recent_tts_phrases to prevent recognition
+                recognition_message = "hmm"
+                self.recent_tts_phrases.append(recognition_message.lower())
+                if len(self.recent_tts_phrases) > self.max_recent_phrases:
+                    self.recent_tts_phrases.pop(0)
+                
+                # Play the sound file
                 data, samplerate = sf.read(self.recognition_sound)
                 sd.play(data, samplerate)
             else:
@@ -417,6 +438,13 @@ class ContinuousListener:
         try:
             if os.path.exists(self.searching_sound):
                 logger.info("Playing searching sound")
+                # Add the searching message to recent_tts_phrases to prevent recognition
+                searching_message = "Ok, just wait a few moments while I search the web."
+                self.recent_tts_phrases.append(searching_message.lower())
+                if len(self.recent_tts_phrases) > self.max_recent_phrases:
+                    self.recent_tts_phrases.pop(0)
+                
+                # Play the sound file
                 data, samplerate = sf.read(self.searching_sound)
                 sd.play(data, samplerate)
             else:
@@ -436,6 +464,13 @@ class ContinuousListener:
         try:
             if os.path.exists(self.self_reflection_sound):
                 logger.info("Playing self-reflection sound")
+                # Add the self-reflection message to recent_tts_phrases to prevent recognition
+                self_reflection_message = "hmmm interesting."
+                self.recent_tts_phrases.append(self_reflection_message.lower())
+                if len(self.recent_tts_phrases) > self.max_recent_phrases:
+                    self.recent_tts_phrases.pop(0)
+                
+                # Play the sound file
                 data, samplerate = sf.read(self.self_reflection_sound)
                 sd.play(data, samplerate)
             else:
