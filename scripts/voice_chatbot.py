@@ -39,9 +39,13 @@ class VoiceChatbot:
         self.continuous_listener = ContinuousListener(
             activation_word=activation_word,
             deactivation_word=deactivation_word,
-            callback=self.handle_speech_input
+            on_speech_recognized=self.handle_speech_input
         )
         self.context['continuous_listener'] = self.continuous_listener
+        
+        # Connect TTS to continuous listener
+        self.tts_manager.continuous_listener = self.continuous_listener
+        self.context['processing_text_prompt'] = False
         
         # Flag to track if we're running
         self.running = False
@@ -77,22 +81,31 @@ class VoiceChatbot:
                 logger.info("References:")
                 logger.info(refs)
             
-            # Generate speech for the response
+            # Generate TTS
             logger.info("Generating TTS response...")
-            tts_text = self.context.get('tts_response', response)
-            audio_path = self.tts_manager.text_to_speech(tts_text)
-            logger.info(f"TTS generation complete: {audio_path}")
             
-            # Wait for TTS to fully complete before continuing
-            while self.tts_manager.is_processing:
-                time.sleep(0.1)
+            # Debug logs for better tracking
+            logger.info(f"DEBUG - Original response: {response[:100]}...")
             
-            # Signal continuous listener that response is complete
-            self.continuous_listener.notify_response_complete()
+            # Add emotion to the text if detected
+            tts_text = response
+            if 'emotion' in self.context:
+                tts_text = f"[{self.context['emotion']}] {response}"
+                logger.info(f"DEBUG - TTS text with emotion: {tts_text[:100]}...")
+            
+            # Generate TTS
+            self.tts_manager.text_to_speech(tts_text)
+            
+            # Signal to the listener that response processing is complete
+            self.continuous_listener.signal_response_complete()
             
         except Exception as e:
-            logger.error(f"Error processing speech input: {e}", exc_info=True)
-            self.continuous_listener.notify_response_complete()
+            logger.error(f"Error processing speech input: {e}")
+            # Still signal completion even on error
+            try:
+                self.continuous_listener.signal_response_complete()
+            except:
+                pass
     
     def start(self):
         """Start the voice chatbot"""

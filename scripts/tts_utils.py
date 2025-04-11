@@ -446,6 +446,9 @@ class TTSManager:
         self.is_processing = True  # Set processing flag
         self.context['is_processing'] = True  # Set processing flag
         
+        # Notify continuous listener about TTS content (to prevent feedback)
+        self.notify_continuous_listener_start(text)
+        
         try:
             # Pause any background processes that use GPU
             if 'self_reflection' in self.context:
@@ -654,7 +657,52 @@ class TTSManager:
             
             self.is_processing = False  # Clear processing flag
             self.context['is_processing'] = False  # Clear processing flag
+            
+            # Notify continuous listener that TTS is finished
+            self.notify_continuous_listener_end()
 
+    def notify_continuous_listener_start(self, text):
+        """
+        Notify the continuous listener that TTS is starting and what content is being spoken.
+        This helps prevent the system from responding to its own TTS output.
+        
+        Args:
+            text: The text being converted to speech
+        """
+        try:
+            # Get continuous listener from context
+            continuous_listener = self.context.get('continuous_listener')
+            
+            if continuous_listener:
+                # Notify about the TTS content
+                if hasattr(continuous_listener, 'notify_tts_content'):
+                    continuous_listener.notify_tts_content(text)
+                    logger.info("Notified continuous listener of TTS content")
+                    
+                # Mark TTS as playing
+                if hasattr(continuous_listener, 'set_tts_playing'):
+                    continuous_listener.set_tts_playing(True)
+                    logger.info("Notified continuous listener that TTS is starting")
+        except Exception as e:
+            logger.error(f"Error notifying continuous listener of TTS start: {e}")
+            
+    def notify_continuous_listener_end(self):
+        """
+        Notify the continuous listener that TTS has finished.
+        This helps prevent the system from responding to its own TTS output.
+        """
+        try:
+            # Get continuous listener from context
+            continuous_listener = self.context.get('continuous_listener')
+            
+            if continuous_listener:
+                # Mark TTS as no longer playing
+                if hasattr(continuous_listener, 'set_tts_playing'):
+                    continuous_listener.set_tts_playing(False)
+                    logger.info("Notified continuous listener that TTS has finished")
+        except Exception as e:
+            logger.error(f"Error notifying continuous listener of TTS end: {e}")
+            
     def __del__(self):
         """Clean up resources when the object is garbage collected."""
         # Signal the playback thread to stop
