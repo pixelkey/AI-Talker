@@ -33,9 +33,9 @@ class ContinuousListener:
         """
         self.recognizer = sr.Recognizer()
         # Configure pause threshold for longer pauses between words/phrases
-        self.recognizer.pause_threshold = 2.0  # Default is 0.8
+        self.recognizer.pause_threshold = 0.8  # Default is 0.8
         self.recognizer.phrase_threshold = 0.3  # Default is 0.3
-        self.recognizer.non_speaking_duration = 1.0  # Default is 0.5
+        self.recognizer.non_speaking_duration = 0.5  # Default is 0.5
         
         self.activation_word = activation_word.lower()
         self.deactivation_word = deactivation_word.lower()
