@@ -66,6 +66,7 @@ class ContinuousListener:
         self.deactivation_sound = os.path.join(self.sound_dir, "deactivation.wav")
         self.recognition_sound = os.path.join(self.sound_dir, "recognition.wav")
         self.searching_sound = os.path.join(self.sound_dir, "searching.wav")
+        self.self_reflection_sound = os.path.join(self.sound_dir, "self_reflection.wav")
         
         # Create sound directory if it doesn't exist
         os.makedirs(self.sound_dir, exist_ok=True)
@@ -429,6 +430,31 @@ class ContinuousListener:
                 sd.play(tone, samplerate)
         except Exception as e:
             logger.error(f"Error playing searching sound: {e}")
+            
+    def play_self_reflection_sound(self):
+        """Play a sound effect when self-reflection is initiated"""
+        try:
+            if os.path.exists(self.self_reflection_sound):
+                logger.info("Playing self-reflection sound")
+                data, samplerate = sf.read(self.self_reflection_sound)
+                sd.play(data, samplerate)
+            else:
+                # Generate a simple beep if sound file doesn't exist
+                logger.info("Self-reflection sound file not found, generating beep")
+                samplerate = 44100
+                t = np.linspace(0, 0.4, int(0.4 * samplerate), False)
+                # Create a complex tone for self-reflection - a chord with a bit of wavering
+                base_freq = 330  # E4
+                # Create a chord (E minor)
+                tone1 = 0.15 * np.sin(2 * np.pi * base_freq * t)  # E4
+                tone2 = 0.15 * np.sin(2 * np.pi * (base_freq * 1.2) * t)  # G4
+                tone3 = 0.15 * np.sin(2 * np.pi * (base_freq * 1.5) * (t + 0.05 * np.sin(2 * t)))  # B4 with slight wavering
+                
+                # Combine the tones
+                tone = tone1 + tone2 + tone3
+                sd.play(tone, samplerate)
+        except Exception as e:
+            logger.error(f"Error playing self-reflection sound: {e}")
         
     def start(self):
         """Start the continuous listener thread."""

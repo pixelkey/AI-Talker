@@ -649,6 +649,15 @@ Respond with only a number between 0.0 and 1.0."""
             self.is_reflecting = True
             logger.info("=== SELF REFLECTION: Starting new reflection process ===")
             
+            # Play self-reflection sound if continuous_listener is available
+            try:
+                continuous_listener = self.context.get('continuous_listener')
+                if continuous_listener and hasattr(continuous_listener, 'play_self_reflection_sound'):
+                    logger.info("SELF REFLECTION: Playing self-reflection sound")
+                    continuous_listener.play_self_reflection_sound()
+            except Exception as e:
+                logger.error(f"SELF REFLECTION: Error playing self-reflection sound: {e}")
+            
             # Copy history to prevent modification
             history_copy = list(history)
             
