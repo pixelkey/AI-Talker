@@ -2,15 +2,17 @@ import torch
 from tortoise.api import TextToSpeech
 from tortoise.utils.audio import load_voice
 import os
-import logging
 import tempfile
-import torchaudio
-import gc
-from typing import Tuple
-import simpleaudio as sa
+import sounddevice as sd
 import numpy as np
 import threading
 import queue
+import time
+import torchaudio
+import logging
+import gc
+from typing import Tuple
+import simpleaudio as sa
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -32,6 +34,10 @@ class TTSManager:
         self.audio_queue = queue.Queue()
         self.playback_thread = threading.Thread(target=self._process_audio_queue, daemon=True)
         self.playback_thread.start()
+        
+        # Voice fingerprint tracking
+        self.voice_fingerprint_samples = []
+        self.max_fingerprint_samples = 5  # Number of samples to keep for fingerprinting
         
         self.initialize_tts()
 
@@ -357,48 +363,70 @@ class TTSManager:
         return True, ""
 
     def _process_audio_queue(self):
-        """Process audio samples from the queue, ensuring sequential playback."""
+        """Process audio data from the queue and play it."""
+        play_obj = None
+        
         while True:
+            # Get audio data from the queue
+            audio_data = self.audio_queue.get()
+            if audio_data is None:  # Signal to stop
+                break
+                
             try:
-                audio_data = self.audio_queue.get()
-                if audio_data is None:  # Sentinel value to stop the thread
-                    break
-                    
-                # Ensure audio is within valid range [-1.0, 1.0] for int16 conversion
-                audio_data = np.clip(audio_data, -1.0, 1.0)
+                # Notify listener that TTS playback is starting
+                self._notify_playback_start()
                 
-                # Convert to int16 and create audio object
-                audio_int16 = (audio_data * 32767).astype(np.int16)
+                # Convert to int16 and play the audio
+                audio_int16 = (audio_data * 32767).astype(np.int16)  
+                play_obj = sa.play_buffer(
+                    audio_int16,
+                    num_channels=1,
+                    bytes_per_sample=2,
+                    sample_rate=24000
+                )
                 
-                try:
-                    play_obj = sa.play_buffer(
-                        audio_int16,
-                        num_channels=1,
-                        bytes_per_sample=2,
-                        sample_rate=24000
-                    )
-                    print("Playing audio chunk")
-                    
-                    # Wait for this sample to finish before playing next
-                    play_obj.wait_done()
-                    print("Audio chunk finished playing")
-                except Exception as e:
-                    print(f"Error playing audio: {e}")
+                # Wait until audio playback is finished
+                play_obj.wait_done()
+                
+                # Add a small buffer period after playback
+                time.sleep(0.1)
+            
+                # Notify listener that TTS playback is finished  
+                self._notify_playback_finish()
+                
+                logger.debug("Audio playback completed")
+                
             except Exception as e:
-                print(f"Error in audio queue processing: {e}")
+                logger.error(f"Error playing audio: {e}")
+                # Still notify that playback is finished even if there was an error
+                self._notify_playback_finish()
+                
+            finally:
+                self.audio_queue.task_done()
+            
+    def _notify_playback_start(self):
+        """Notify the continuous listener that TTS playback has started."""
+        try:
+            continuous_listener = self.context.get('continuous_listener')
+            if continuous_listener and hasattr(continuous_listener, 'notify_tts_started'):
+                continuous_listener.notify_tts_started()
+                logger.info("Notified listener of TTS playback start")
+        except Exception as e:
+            logger.error(f"Error notifying TTS start: {e}")
+            
+    def _notify_playback_finish(self):
+        """Notify the continuous listener that TTS playback has finished."""
+        try:
+            continuous_listener = self.context.get('continuous_listener')
+            if continuous_listener and hasattr(continuous_listener, 'notify_tts_finished'):
+                continuous_listener.notify_tts_finished()
+                logger.info("Notified listener of TTS playback finish")
+        except Exception as e:
+            logger.error(f"Error notifying TTS finish: {e}")
 
     def play_audio_async(self, audio_data):
         """Queue audio data for playback without blocking the main process."""
         self.audio_queue.put(audio_data)
-
-    def __del__(self):
-        """Clean up resources when the object is garbage collected."""
-        # Signal the playback thread to stop
-        if hasattr(self, 'audio_queue'):
-            self.audio_queue.put(None)
-            
-        # Clear any CUDA tensors
-        self.clear_gpu_memory()
 
     def text_to_speech(self, text):
         """Convert text to speech using Tortoise TTS with emotional prompting support.
@@ -626,3 +654,12 @@ class TTSManager:
             
             self.is_processing = False  # Clear processing flag
             self.context['is_processing'] = False  # Clear processing flag
+
+    def __del__(self):
+        """Clean up resources when the object is garbage collected."""
+        # Signal the playback thread to stop
+        if hasattr(self, 'audio_queue'):
+            self.audio_queue.put(None)
+            
+        # Clear any CUDA tensors
+        self.clear_gpu_memory()

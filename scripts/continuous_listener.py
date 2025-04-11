@@ -3,16 +3,17 @@
 import speech_recognition as sr
 import threading
 import time
-import logging
 import queue
-from typing import Callable, Optional
+from typing import Optional, Callable
+import logging
+import numpy as np
 
+# Configure logging
 logger = logging.getLogger(__name__)
 
 class ContinuousListener:
-    """
-    A class to continuously listen for speech input with activation word detection.
-    """
+    """A class to continuously listen for speech input with activation word detection."""
+    
     def __init__(self, 
                  activation_word: str = "activate", 
                  deactivation_word: str = "stop",
@@ -41,11 +42,30 @@ class ContinuousListener:
         self.response_queue = queue.Queue()
         self.active_thread = None
         
+        # TTS state tracking
+        self.is_tts_playing = False        # Flag for when TTS is actively playing
+        self.last_tts_end_time = 0         # When TTS last ended
+        self.tts_cooldown_period = 0.3     # Very short cooldown after TTS ends
+    
     def _adjust_for_ambient_noise(self, source):
         """Adjust recognizer sensitivity for ambient noise level."""
         logger.info("Adjusting for ambient noise...")
-        self.recognizer.adjust_for_ambient_noise(source, duration=1)
-        logger.info("Ambient noise adjustment complete")
+        try:
+            self.recognizer.adjust_for_ambient_noise(source, duration=1)
+            logger.info("Ambient noise adjustment complete")
+        except Exception as e:
+            logger.error(f"Error adjusting for ambient noise: {e}")
+            
+    def notify_tts_started(self):
+        """Notify that TTS playback has started."""
+        logger.info("TTS playback started - pausing recognition")
+        self.is_tts_playing = True
+        
+    def notify_tts_finished(self):
+        """Notify that TTS playback has finished."""
+        logger.info("TTS playback finished - resuming recognition after short delay")
+        self.is_tts_playing = False
+        self.last_tts_end_time = time.time()
         
     def listen_for_activation(self):
         """Background thread that listens for the activation word."""
@@ -55,51 +75,48 @@ class ContinuousListener:
                 
                 logger.info(f"Waiting for activation word: '{self.activation_word}'")
                 while not self.stop_requested:
+                    # Add a short delay to prevent CPU overuse
+                    time.sleep(0.05)
+                    
+                    # Skip listening if TTS is playing
+                    if self.is_tts_playing:
+                        continue
+                    
+                    # Also skip if we just finished TTS playback (slight cooldown)
+                    time_since_tts_end = time.time() - self.last_tts_end_time
+                    if time_since_tts_end < self.tts_cooldown_period:
+                        continue
+                    
                     try:
-                        # Short timeout for checking stop_requested frequently
-                        # Using only timeout and phrase_time_limit parameters
-                        audio = self.recognizer.listen(
-                            source, 
-                            timeout=2, 
-                            phrase_time_limit=3
-                        )
-                        
+                        audio = self.recognizer.listen(source, phrase_time_limit=5, timeout=1)
                         try:
                             text = self.recognizer.recognize_google(audio).lower()
                             logger.debug(f"Heard: {text}")
                             
-                            # Check if activation word is detected
                             if self.activation_word in text:
                                 logger.info(f"Activation word detected: '{text}'")
-                                self.start_active_listening()
-                                break
+                                self._start_active_listening()
+                                break  # Exit loop once activated
                                 
                         except sr.UnknownValueError:
-                            # Speech not recognized - normal, continue listening
+                            # Speech was unintelligible
                             pass
                         except sr.RequestError as e:
                             logger.error(f"Google Speech Recognition service error: {e}")
-                            time.sleep(2)  # Wait before retrying
                             
                     except sr.WaitTimeoutError:
-                        # Timeout is expected - allows checking stop_requested periodically
+                        # No speech detected within timeout
                         pass
-                        
         except Exception as e:
-            logger.error(f"Error in activation listener: {e}")
-            self.stop_requested = True
-            
-    def start_active_listening(self):
-        """Start the active listening mode after activation word is detected."""
-        if self.active_thread and self.active_thread.is_alive():
-            logger.info("Active listening is already running")
-            return
+            logger.error(f"Error in listen_for_activation: {e}")
         
+    def _start_active_listening(self):
+        """Start the active listening mode after activation word is detected."""
         self.is_active = True
         self.active_thread = threading.Thread(target=self._active_listening_loop)
         self.active_thread.daemon = True
         self.active_thread.start()
-        
+    
     def _active_listening_loop(self):
         """Active listening loop that captures user speech until deactivation word."""
         try:
@@ -111,9 +128,21 @@ class ContinuousListener:
                     self.is_listening = True
                     logger.info("Listening for input... (say 'stop' to end conversation)")
                     
+                    # Skip listening if TTS is playing
+                    if self.is_tts_playing:
+                        logger.debug("TTS is playing - skipping recognition")
+                        time.sleep(0.1)
+                        continue
+                        
+                    # Also skip if we just finished TTS playback (brief cooldown)
+                    time_since_tts_end = time.time() - self.last_tts_end_time
+                    if time_since_tts_end < self.tts_cooldown_period:
+                        logger.debug(f"In TTS cooldown ({time_since_tts_end:.2f}s < {self.tts_cooldown_period}s)")
+                        time.sleep(0.1)
+                        continue
+                    
                     try:
-                        # Using only timeout and phrase_time_limit parameters
-                        # Increased phrase_time_limit to 30 seconds for longer sentences
+                        # Listen for user speech with reasonable timeouts
                         audio = self.recognizer.listen(
                             source, 
                             timeout=5, 
@@ -124,82 +153,76 @@ class ContinuousListener:
                             text = self.recognizer.recognize_google(audio).lower()
                             logger.info(f"Recognized: {text}")
                             
-                            # Check for deactivation word
-                            if self.deactivation_word in text:
-                                logger.info("Deactivation word detected, ending active listening")
+                            # Check for deactivation word to end conversation
+                            if text == self.deactivation_word:
+                                logger.info("Deactivation word detected, ending conversation")
                                 self.is_active = False
                                 self.is_listening = False
-                                # Restart activation word listener
-                                self.restart_activation_listener()
+                                self._start_listen_for_activation_thread()
                                 break
-                                
-                            # Process the recognized text if not the deactivation word
+                            
+                            # Send recognized text to callback
                             if self.callback:
                                 logger.info(f"Submitting recognized text: '{text}'")
                                 self.callback(text)
                                 
-                                # Wait for response before continuing
+                                # Wait for response to complete before listening again
                                 logger.info("Waiting for response to complete...")
-                                try:
-                                    # Wait with timeout for response signal
-                                    self.response_queue.get(timeout=30)
-                                    logger.info("Response completed, ready for next input")
-                                except queue.Empty:
-                                    logger.warning("Timed out waiting for response, continuing anyway")
+                                self._wait_for_response_complete()
+                                logger.info("Response completed, ready for next input")
                             
                         except sr.UnknownValueError:
                             logger.info("Could not understand audio")
                         except sr.RequestError as e:
                             logger.error(f"Google Speech Recognition service error: {e}")
-                            
+                    
                     except sr.WaitTimeoutError:
-                        # No speech detected in timeout period
                         logger.info("No speech detected, continuing to listen...")
                     
-                    self.is_listening = False
-                    
+                    except Exception as e:
+                        logger.error(f"Error in active listening loop: {e}")
+                        
         except Exception as e:
             logger.error(f"Error in active listening loop: {e}")
-            self.is_active = False
-            self.is_listening = False
-            self.restart_activation_listener()
             
-    def restart_activation_listener(self):
-        """Restart the activation word listener after deactivation."""
-        if not self.stop_requested:
-            self.thread = threading.Thread(target=self.listen_for_activation)
-            self.thread.daemon = True
-            self.thread.start()
-            
-    def signal_response_complete(self):
-        """Signal that response processing is complete and ready for next input."""
+    def _wait_for_response_complete(self):
+        """Wait for a response to be placed in the queue."""
         try:
-            self.response_queue.put(True, block=False)
-        except queue.Full:
-            # Queue already has an item, which is fine
-            pass
+            self.response_queue.get(timeout=60)  # Wait up to 60 seconds for response
+        except queue.Empty:
+            logger.warning("Response timeout - continuing without waiting")
             
-    def start(self):
-        """Start the continuous listener in a background thread."""
-        if self.thread and self.thread.is_alive():
-            logger.info("Listener is already running")
-            return
-            
-        self.stop_requested = False
+    def notify_response_complete(self):
+        """Mark that a response is complete and we can listen again."""
+        self.response_queue.put(True)
+        
+    def _start_listen_for_activation_thread(self):
+        """Start the thread that listens for the activation word."""
         self.thread = threading.Thread(target=self.listen_for_activation)
         self.thread.daemon = True
         self.thread.start()
-        logger.info("Continuous listener started")
+        
+    def start(self):
+        """Start the continuous listener thread."""
+        self._start_listen_for_activation_thread()
         
     def stop(self):
         """Stop the continuous listener."""
         logger.info("Stopping continuous listener...")
         self.stop_requested = True
+        
+        # Wait for any active threads to finish
+        if self.active_thread and self.active_thread.is_alive():
+            try:
+                self.active_thread.join(timeout=2)
+            except Exception as e:
+                logger.error(f"Error joining active thread: {e}")
+                
+        if self.thread and self.thread.is_alive():
+            try:
+                self.thread.join(timeout=2)
+            except Exception as e:
+                logger.error(f"Error joining listener thread: {e}")
+                
         self.is_active = False
         self.is_listening = False
-        # Wait for threads to end naturally
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2)
-        if self.active_thread and self.active_thread.is_alive():
-            self.active_thread.join(timeout=2)
-        logger.info("Continuous listener stopped")

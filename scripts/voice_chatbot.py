@@ -88,11 +88,11 @@ class VoiceChatbot:
                 time.sleep(0.1)
             
             # Signal continuous listener that response is complete
-            self.continuous_listener.signal_response_complete()
+            self.continuous_listener.notify_response_complete()
             
         except Exception as e:
             logger.error(f"Error processing speech input: {e}", exc_info=True)
-            self.continuous_listener.signal_response_complete()
+            self.continuous_listener.notify_response_complete()
     
     def start(self):
         """Start the voice chatbot"""
