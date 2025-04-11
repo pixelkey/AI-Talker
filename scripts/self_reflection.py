@@ -11,6 +11,7 @@ import pytz
 import re
 from langchain.docstore.document import Document  # Fix import path for Document class
 from faiss_utils import save_faiss_index_metadata_and_docstore  # Add import for save function
+from config import FAISS_INDEX_PATH, METADATA_PATH, DOCSTORE_PATH
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -324,8 +325,40 @@ Respond with only a number between 0.0 and 1.0."""
                     )
                     vector_store = self.context.get('vector_store')
                     if vector_store:
+                        logger.info(f"SELF REFLECTION: Vector store before adding memory - docstore size: {len(vector_store.docstore._dict)}")
+                        logger.info(f"SELF REFLECTION: Paths - FAISS: {FAISS_INDEX_PATH}, META: {METADATA_PATH}, DOCSTORE: {DOCSTORE_PATH}")
+                        
+                        # First, add the document to the vector store
+                        logger.info(f"SELF REFLECTION: Adding memory doc with content: {memory_doc.page_content[:100]}...")
                         vector_store.add_documents([memory_doc])
+                        
+                        # Verify document was added
+                        logger.info(f"SELF REFLECTION: Vector store after adding memory - docstore size: {len(vector_store.docstore._dict)}")
                         logger.info(f"SELF REFLECTION: Added conversation memory to embeddings")
+                        
+                        # Convert relative paths to absolute paths
+                        from vector_store_utils import calculate_file_paths
+                        import os  # Ensure os is imported in this scope
+                        script_dir = os.path.dirname(os.path.abspath(__file__))
+                        abs_faiss_path, abs_metadata_path, abs_docstore_path = calculate_file_paths(
+                            script_dir, FAISS_INDEX_PATH, METADATA_PATH, DOCSTORE_PATH
+                        )
+                        
+                        logger.info(f"SELF REFLECTION: Using absolute paths - FAISS: {abs_faiss_path}, META: {abs_metadata_path}, DOCSTORE: {abs_docstore_path}")
+                        
+                        # Now save the updated vector store to disk
+                        save_faiss_index_metadata_and_docstore(
+                            vector_store.index,
+                            vector_store.index_to_docstore_id,
+                            vector_store.docstore,
+                            abs_faiss_path,
+                            abs_metadata_path, 
+                            abs_docstore_path
+                        )
+                        
+                        # Verify file was saved and has content
+                        docstore_size = os.path.getsize(abs_docstore_path) if os.path.exists(abs_docstore_path) else 0
+                        logger.info(f"SELF REFLECTION: Saved updated vector store to disk - docstore file size: {docstore_size} bytes")
                         
                         # Process web search if needed and score warrants it
                         if search_needed and search_query and surprise_score >= self.surprise_thresholds['low']:
@@ -383,16 +416,33 @@ Respond with only a number between 0.0 and 1.0."""
                 
                 # Save updated vector store
                 if vector_store:
+                    logger.info(f"SELF REFLECTION: About to save vector store to disk - docstore size: {len(vector_store.docstore._dict)}")
+                    logger.info(f"SELF REFLECTION: Paths - FAISS: {FAISS_INDEX_PATH}, META: {METADATA_PATH}, DOCSTORE: {DOCSTORE_PATH}")
+                    
+                    # Convert relative paths to absolute paths
+                    from vector_store_utils import calculate_file_paths
+                    import os  # Ensure os is imported in this scope
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    abs_faiss_path, abs_metadata_path, abs_docstore_path = calculate_file_paths(
+                        script_dir, FAISS_INDEX_PATH, METADATA_PATH, DOCSTORE_PATH
+                    )
+                    
+                    logger.info(f"SELF REFLECTION: Using absolute paths - FAISS: {abs_faiss_path}, META: {abs_metadata_path}, DOCSTORE: {abs_docstore_path}")
+                    
                     save_faiss_index_metadata_and_docstore(
                         vector_store.index,
                         vector_store.index_to_docstore_id,
                         vector_store.docstore,
-                        os.environ["FAISS_INDEX_PATH"],
-                        os.environ["METADATA_PATH"],
-                        os.environ["DOCSTORE_PATH"]
+                        abs_faiss_path,
+                        abs_metadata_path, 
+                        abs_docstore_path
                     )
-                    logger.info("SELF REFLECTION: Saved updated vector store to disk")
-
+                    
+                    # Verify file was saved and has content
+                    import os
+                    docstore_size = os.path.getsize(abs_docstore_path) if os.path.exists(abs_docstore_path) else 0
+                    logger.info(f"SELF REFLECTION: Saved updated vector store to disk - docstore file size: {docstore_size} bytes")
+                    
             logger.info(f"SELF REFLECTION: Processed conversation: memory_type={memory_type}, score={surprise_score}, "
                        f"memory_length={len(memory_data) if memory_data else 0}, "
                        f"web_memory={'yes' if web_memory else 'no'}")
@@ -430,13 +480,15 @@ Respond with only a number between 0.0 and 1.0."""
             # Handle tuple format
             elif isinstance(msg, tuple):
                 user_msg, bot_msg = msg
-                formatted.extend([
-                    f"User: {self._clean_message(user_msg)}",
-                    f"Bot: {self._clean_message(bot_msg)}"
-                ])
+                if not user_msg.startswith("User: "):
+                    user_msg = f"User: {user_msg}"
+                if not bot_msg.startswith("Bot: "):
+                    bot_msg = f"Bot: {bot_msg}"
+                formatted.append(user_msg)
+                formatted.append(bot_msg)
             # Handle string format
             else:
-                formatted.append(self._clean_message(msg))
+                formatted.append(msg)
         
         return "\n".join(formatted)
 
