@@ -33,7 +33,7 @@ class ContinuousListener:
         """
         self.recognizer = sr.Recognizer()
         # Configure pause threshold for longer pauses between words/phrases
-        self.recognizer.pause_threshold = 0.8  # Default is 0.8
+        self.recognizer.pause_threshold = 2  # Default is 0.8
         self.recognizer.phrase_threshold = 0.3  # Default is 0.3
         self.recognizer.non_speaking_duration = 0.5  # Default is 0.5
         
@@ -65,6 +65,7 @@ class ContinuousListener:
         self.activation_sound = os.path.join(self.sound_dir, "activation.wav")
         self.deactivation_sound = os.path.join(self.sound_dir, "deactivation.wav")
         self.recognition_sound = os.path.join(self.sound_dir, "recognition.wav")
+        self.searching_sound = os.path.join(self.sound_dir, "searching.wav")
         
         # Create sound directory if it doesn't exist
         os.makedirs(self.sound_dir, exist_ok=True)
@@ -208,8 +209,8 @@ class ContinuousListener:
             phrase_words = set(norm_phrase.split())
             common_words = text_words.intersection(phrase_words)
             
-            # If more than 50% of words match, likely self-speech
-            if len(common_words) >= len(text_words) * 0.5:
+            # If more than 75% of words match, likely self-speech
+            if len(common_words) >= len(text_words) * 0.75:
                 return True
                 
         return False
@@ -409,6 +410,25 @@ class ContinuousListener:
                 sd.play(tone, samplerate)
         except Exception as e:
             logger.error(f"Error playing recognition sound: {e}")
+            
+    def play_searching_sound(self):
+        """Play a sound effect when web search is initiated"""
+        try:
+            if os.path.exists(self.searching_sound):
+                logger.info("Playing searching sound")
+                data, samplerate = sf.read(self.searching_sound)
+                sd.play(data, samplerate)
+            else:
+                # Generate a simple beep if sound file doesn't exist
+                logger.info("Searching sound file not found, generating beep")
+                samplerate = 44100
+                t = np.linspace(0, 0.3, int(0.3 * samplerate), False)
+                # Create a slightly rising tone for searching
+                freqs = np.linspace(440, 587, int(0.3 * samplerate))  # A4 to D5
+                tone = 0.3 * np.sin(2 * np.pi * np.cumsum(freqs) / samplerate)
+                sd.play(tone, samplerate)
+        except Exception as e:
+            logger.error(f"Error playing searching sound: {e}")
         
     def start(self):
         """Start the continuous listener thread."""

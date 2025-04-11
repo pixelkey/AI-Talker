@@ -1056,6 +1056,15 @@ SEARCH_QUERY: new york weather forecast"""
         if result["needs_web_search"]:
             logging.info(f"Web search deemed necessary, performing search with query: {search_query}")
             
+            # Play the searching sound when NEEDS_SEARCH is YES
+            try:
+                continuous_listener = context.get("continuous_listener")
+                if continuous_listener and hasattr(continuous_listener, 'play_searching_sound'):
+                    logging.info("Playing searching sound since web search is needed")
+                    continuous_listener.play_searching_sound()
+            except Exception as e:
+                logging.error(f"Error playing searching sound: {e}")
+            
             # Get DDGS instance from context
             ddgs = context.get('ddgs')
             if not ddgs:
