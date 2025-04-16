@@ -40,7 +40,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class TTSManager:
-    def __init__(self, context):
+    def __init__(self, context, voice_name=None, disable_watermark=False):
         """Initialize TTS Manager with context"""
         self.context = context
         self.generator = None
@@ -51,10 +51,11 @@ class TTSManager:
         self.audio_queue = queue.Queue()
         self.playback_thread = threading.Thread(target=self._process_audio_queue, daemon=True)
         self.playback_thread.start()
-        self.voice_name = os.getenv("TTS_VOICE", "Alex_0")
+        self.voice_name = os.getenv("TTS_VOICE", "Alex_0") if voice_name is None else voice_name
         self.voice_id = None
         self.first_audio = None
         self.first_text = None
+        self.disable_watermark = disable_watermark
         
         # Extract numeric voice ID from name if present (e.g., Alex_0 -> 0)
         if '_' in self.voice_name and self.voice_name.split('_')[-1].isdigit():
@@ -78,6 +79,21 @@ class TTSManager:
         try:
             # Initialize the CSM generator
             self.generator = load_csm_1b(device=self.device)
+            
+            # Disable watermarking if requested (to save memory)
+            if self.disable_watermark:
+                print("Watermarking disabled for memory efficiency")
+                # Monkey-patch the watermarking function itself instead of the generate method
+                from csm.watermarking import watermark
+                
+                # Create a replacement watermark function that just returns the audio without watermarking
+                def no_watermark(watermarker, audio, sample_rate, watermark_key):
+                    print("Watermarking bypassed to save memory")
+                    return audio, sample_rate
+                
+                # Replace the watermark function in the generator module
+                import csm.generator
+                csm.generator.watermark = no_watermark
             
             # CRITICAL FIX: The key is using the correct numeric speaker ID
             # In the CSM model, speaker ID 0 = Alex, 1 = Carter, etc.
