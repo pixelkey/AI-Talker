@@ -29,6 +29,8 @@ class TTSManager:
         self.audio_queue = queue.Queue()
         self.playback_thread = threading.Thread(target=self._process_audio_queue, daemon=True)
         self.playback_thread.start()
+        self.voice_name = os.getenv("TTS_VOICE", "emma")
+        self.voice_path = self._find_voice_checkpoint(self.voice_name)
         self.initialize_tts()
 
     def get_device(self):
@@ -43,6 +45,16 @@ class TTSManager:
         print("\n=== Initializing Sesame CSM TTS ===")
         try:
             self.generator = load_csm_1b(device=self.device)
+            # Load the selected voice checkpoint
+            if self.voice_path:
+                state_dict = torch.load(self.voice_path, map_location=self.device)
+                if hasattr(self.generator, 'load_state_dict'):
+                    self.generator.load_state_dict(state_dict)
+                elif hasattr(self.generator, 'model') and hasattr(self.generator.model, 'load_state_dict'):
+                    self.generator.model.load_state_dict(state_dict)
+                else:
+                    print("WARNING: Unable to load voice checkpoint into generator. Please check integration.")
+                print(f"Loaded voice: {self.voice_name} from {self.voice_path}")
             self.sample_rate = self.generator.sample_rate
             print(f"Sesame CSM TTS initialized on {self.device}")
         except Exception as e:
@@ -51,9 +63,40 @@ class TTSManager:
             traceback.print_exc()
 
     def text_to_speech(self, text):
-        """Convert text to speech using Sesame CSM TTS."""
+        """Convert text to speech using Sesame CSM TTS.
+        
+        This method now uses text_to_speech_sentences internally to process
+        text one sentence at a time for improved reliability.
+        """
         logger = logging.getLogger(__name__)
         logger.info("\n=== Starting text_to_speech (CSM) ===")
+        logger.info(f"Using robust sentence-by-sentence processing for reliability")
+        
+        try:
+            # Call the enhanced sentence-by-sentence method for better reliability
+            temp_paths = self.text_to_speech_sentences(text)
+            
+            # Return the path to the first audio file for backward compatibility
+            return temp_paths[0] if temp_paths else None
+        except Exception as e:
+            logger.error(f"Error in text_to_speech: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def split_text_to_sentences(self, text):
+        """Split text into sentences using a simple regex."""
+        import re
+        logger.info(f"Splitting text into sentences: {text}")
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        logger.info(f"Split into {len(sentences)} sentences: {sentences}")
+        return [s for s in sentences if s]
+
+    def text_to_speech_sentences(self, text):
+        """Convert text to speech one sentence at a time, queueing each for playback."""
+        logger = logging.getLogger(__name__)
+        logger.info(f"\n=== Starting text_to_speech_sentences (CSM) ===")
+        logger.info(f"Using voice: {self.voice_name} (checkpoint: {self.voice_path})")
         self.is_processing = True
         self.context['is_processing'] = True
         self.notify_continuous_listener_start(text)
@@ -62,28 +105,41 @@ class TTSManager:
                 self.initialize_tts()
             if self.generator is None:
                 raise RuntimeError("Failed to initialize Sesame CSM TTS system")
-            # You may want to parse for style cues here and map to speaker if needed
-            # For now, just use self.speaker and no context
-            audio = self.generator.generate(
-                text=text,
-                speaker=self.speaker,
-                context=[],
-                max_audio_length_ms=10000,
-            )
-            # Save audio to temp file and queue for playback
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
-                temp_path = fp.name
-                torchaudio.save(temp_path, audio.unsqueeze(0).cpu(), self.sample_rate)
-                print(f"Audio saved to {temp_path}")
-            # Play asynchronously
-            audio_data = audio.cpu().numpy()
-            self.play_audio_async(audio_data)
-            return temp_path
+            sentences = self.split_text_to_sentences(text)
+            temp_paths = []
+            for idx, sentence in enumerate(sentences):
+                if not sentence.strip():
+                    continue
+                clean_sentence = sentence.strip()
+                logger.info(f"[TTS] Processing sentence {idx+1}/{len(sentences)}: '{clean_sentence}'")
+                try:
+                    audio = self.generator.generate(
+                        text=clean_sentence,
+                        speaker=self.speaker,
+                        context=[],
+                        max_audio_length_ms=10000,
+                    )
+                    # Save audio to temp file and queue for playback
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
+                        temp_path = fp.name
+                        torchaudio.save(temp_path, audio.unsqueeze(0).cpu(), self.sample_rate)
+                        logger.info(f"[TTS] Audio saved to {temp_path} (sentence {idx+1})")
+                    # Play asynchronously
+                    audio_data = audio.cpu().numpy()
+                    self.play_audio_async(audio_data)
+                    temp_paths.append(temp_path)
+                    logger.info(f"[TTS] Sentence {idx+1} processed and queued for playback.")
+                except Exception as e:
+                    logger.error(f"[TTS] Error processing sentence {idx+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            logger.info(f"[TTS] Finished processing all sentences. {len(temp_paths)} audio files created.")
+            return temp_paths
         except Exception as e:
-            print(f"Error in Sesame CSM text-to-speech: {e}")
+            logger.error(f"Error in Sesame CSM text-to-speech (sentences): {e}")
             import traceback
             traceback.print_exc()
-            return None
+            return []
         finally:
             self.is_processing = False
             self.context['is_processing'] = False
@@ -150,6 +206,15 @@ class TTSManager:
                 logger.info("Notified listener of TTS playback finish")
         except Exception as e:
             logger.error(f"Error notifying TTS finish: {e}")
+
+    def _find_voice_checkpoint(self, voice_name):
+        """Find the .pt checkpoint for the given voice name in assets/voices."""
+        voices_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "voices")
+        # Accept both exact and partial (case-insensitive) matches
+        for fname in os.listdir(voices_dir):
+            if fname.lower().endswith(".pt") and voice_name.lower() in fname.lower():
+                return os.path.join(voices_dir, fname)
+        raise FileNotFoundError(f"Voice checkpoint for '{voice_name}' not found in {voices_dir}")
 
     def play_audio_async(self, audio_data):
         """Queue audio data for playback without blocking the main process."""
