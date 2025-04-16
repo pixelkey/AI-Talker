@@ -1,4 +1,7 @@
 import os
+import sys
+# Add the parent directory to sys.path to find the modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 import logging
 os.environ["TTS_VOICE"] = "Alex_0"  # Ensure the correct voice is used for testing
