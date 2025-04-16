@@ -29,7 +29,14 @@ class TTSManager:
         self.audio_queue = queue.Queue()
         self.playback_thread = threading.Thread(target=self._process_audio_queue, daemon=True)
         self.playback_thread.start()
-        self.voice_name = os.getenv("TTS_VOICE", "emma")
+        self.voice_name = os.getenv("TTS_VOICE", "Alex_0")
+        self.voice_id = None  # Will be extracted from voice_name
+        
+        # Extract numeric voice ID from name if present (e.g., Alex_0 -> 0)
+        if '_' in self.voice_name and self.voice_name.split('_')[-1].isdigit():
+            self.voice_id = int(self.voice_name.split('_')[-1])
+            logger.info(f"Extracted voice ID {self.voice_id} from voice name {self.voice_name}")
+        
         self.voice_path = self._find_voice_checkpoint(self.voice_name)
         self.initialize_tts()
 
@@ -45,16 +52,39 @@ class TTSManager:
         print("\n=== Initializing Sesame CSM TTS ===")
         try:
             self.generator = load_csm_1b(device=self.device)
+            # Set speaker ID to match voice checkpoint if available
+            if self.voice_id is not None:
+                self.speaker = self.voice_id
+                logger.info(f"Using voice ID {self.speaker} to match voice checkpoint {self.voice_name}")
+            else:
+                logger.info(f"No voice ID found in {self.voice_name}, using default speaker ID {self.speaker}")
+                
             # Load the selected voice checkpoint
             if self.voice_path:
-                state_dict = torch.load(self.voice_path, map_location=self.device)
-                if hasattr(self.generator, 'load_state_dict'):
-                    self.generator.load_state_dict(state_dict)
-                elif hasattr(self.generator, 'model') and hasattr(self.generator.model, 'load_state_dict'):
-                    self.generator.model.load_state_dict(state_dict)
-                else:
-                    print("WARNING: Unable to load voice checkpoint into generator. Please check integration.")
-                print(f"Loaded voice: {self.voice_name} from {self.voice_path}")
+                try:
+                    state_dict = torch.load(self.voice_path, map_location=self.device)
+                    
+                    # First check model._model for CSM generator
+                    if hasattr(self.generator, '_model') and hasattr(self.generator._model, 'load_state_dict'):
+                        logger.info("Loading voice checkpoint into generator._model")
+                        self.generator._model.load_state_dict(state_dict)
+                    # Next try direct load_state_dict
+                    elif hasattr(self.generator, 'load_state_dict'):
+                        logger.info("Loading voice checkpoint directly into generator")
+                        self.generator.load_state_dict(state_dict)
+                    # Finally try model attribute
+                    elif hasattr(self.generator, 'model') and hasattr(self.generator.model, 'load_state_dict'):
+                        logger.info("Loading voice checkpoint into generator.model")
+                        self.generator.model.load_state_dict(state_dict)
+                    else:
+                        logger.error("Unable to find appropriate target for loading voice checkpoint")
+                        print("WARNING: Unable to load voice checkpoint into generator. Please check integration.")
+                    
+                    print(f"Loaded voice: {self.voice_name} from {self.voice_path}")
+                except Exception as e:
+                    logger.error(f"Error loading voice checkpoint: {e}")
+                    print(f"Error loading voice checkpoint: {e}")
+            
             self.sample_rate = self.generator.sample_rate
             print(f"Sesame CSM TTS initialized on {self.device}")
         except Exception as e:
@@ -110,7 +140,7 @@ class TTSManager:
             for idx, sentence in enumerate(sentences):
                 if not sentence.strip():
                     continue
-                clean_sentence = sentence.strip()
+                clean_sentence = self.clean_text_for_tts(sentence.strip())
                 logger.info(f"[TTS] Processing sentence {idx+1}/{len(sentences)}: '{clean_sentence}'")
                 try:
                     audio = self.generator.generate(
@@ -144,6 +174,111 @@ class TTSManager:
             self.is_processing = False
             self.context['is_processing'] = False
             self.notify_continuous_listener_end()
+
+    def clean_text_for_tts(self, text):
+        """
+        Clean text to make it suitable for TTS processing.
+        Removes problematic symbols while preserving emotion markers.
+        
+        Args:
+            text: Text to clean
+            
+        Returns:
+            Cleaned text ready for TTS processing
+        """
+        import re
+        
+        # Skip cleaning if text is empty
+        if not text:
+            return text
+            
+        # Preserve emotion markers at the start of text like [happy], [excited], etc.
+        emotion_marker = None
+        emotion_match = re.match(r'^\s*\[(.*?)\]', text)
+        if emotion_match:
+            emotion_marker = emotion_match.group(0)
+            text = text[len(emotion_marker):].strip()
+            logger.info(f"Preserved emotion marker: {emotion_marker}")
+            
+        # Replace problematic symbols with their spoken form or spaces
+        replacements = {
+            ':': ' ', 
+            ';': ',',
+            '&': ' and ',
+            '+': ' plus ',
+            '=': ' equals ',
+            '@': ' at ',
+            '#': ' number ',
+            '%': ' percent ',
+            '|': ' or ',
+            '$': ' dollars ',
+            '•': ', ',
+            '·': ', ',
+            '…': '...',
+            '*': ' star ',
+            '^': '',
+            '~': '',
+            '`': '',
+            '<': '',
+            '>': '',
+            '"': "'",
+            '"': "'",
+            '"': "'",
+            ''': "'",
+            ''': "'",
+            '–': '-',
+            '—': '-',
+            '©': '',
+            '®': '',
+            '™': '',
+        }
+        
+        # Apply replacements
+        for symbol, replacement in replacements.items():
+            text = text.replace(symbol, replacement)
+            
+        # Fix common abbreviations
+        abbreviations = {
+            'e.g.': 'for example',
+            'i.e.': 'that is',
+            'etc.': 'etcetera',
+            'vs.': 'versus',
+            'approx.': 'approximately',
+            'hr.': 'hour',
+            'hr ': 'hour ',
+            'hrs.': 'hours',
+            'hrs ': 'hours ',
+            'min.': 'minute',
+            'min ': 'minute ',
+            'mins.': 'minutes',
+            'mins ': 'minutes ',
+            'sec.': 'second',
+            'sec ': 'second ',
+            'secs.': 'seconds',
+            'secs ': 'seconds ',
+        }
+        
+        # Apply abbreviation replacements - must match whole word with word boundaries
+        for abbr, full in abbreviations.items():
+            text = re.sub(r'\b' + re.escape(abbr) + r'\b', full, text)
+        
+        # Fix some specific patterns that cause issues
+        # URLs and email addresses - replace with "link" or "email"
+        text = re.sub(r'https?://\S+', 'link', text)
+        text = re.sub(r'\S+@\S+\.\S+', 'email address', text)
+        
+        # Handle repeated spaces
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Re-add emotion marker if it was present
+        if emotion_marker:
+            text = emotion_marker + ' ' + text
+            
+        # Ensure there's a period at the end for better TTS phrasing if not already present
+        if text and text[-1] not in ['.', '!', '?']:
+            text += '.'
+            
+        return text.strip()
 
     def _process_audio_queue(self):
         """Process audio data from the queue and play it."""
