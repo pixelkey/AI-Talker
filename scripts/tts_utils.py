@@ -31,6 +31,8 @@ class TTSManager:
         self.playback_thread.start()
         self.voice_name = os.getenv("TTS_VOICE", "Alex_0")
         self.voice_id = None  # Will be extracted from voice_name
+        self.first_audio = None
+        self.first_text = None
         
         # Extract numeric voice ID from name if present (e.g., Alex_0 -> 0)
         if '_' in self.voice_name and self.voice_name.split('_')[-1].isdigit():
@@ -38,6 +40,8 @@ class TTSManager:
             logger.info(f"Extracted voice ID {self.voice_id} from voice name {self.voice_name}")
         
         self.voice_path = self._find_voice_checkpoint(self.voice_name)
+        # This is crucial for voice consistency - store a voice context
+        self.voice_context = []
         self.initialize_tts()
 
     def get_device(self):
@@ -59,26 +63,34 @@ class TTSManager:
             else:
                 logger.info(f"No voice ID found in {self.voice_name}, using default speaker ID {self.speaker}")
                 
-            # Load the selected voice checkpoint
+            # Load the selected voice checkpoint - handle both tensor and state_dict formats
             if self.voice_path:
                 try:
-                    state_dict = torch.load(self.voice_path, map_location=self.device)
+                    checkpoint = torch.load(self.voice_path, map_location=self.device)
                     
-                    # First check model._model for CSM generator
-                    if hasattr(self.generator, '_model') and hasattr(self.generator._model, 'load_state_dict'):
-                        logger.info("Loading voice checkpoint into generator._model")
-                        self.generator._model.load_state_dict(state_dict)
-                    # Next try direct load_state_dict
-                    elif hasattr(self.generator, 'load_state_dict'):
-                        logger.info("Loading voice checkpoint directly into generator")
-                        self.generator.load_state_dict(state_dict)
-                    # Finally try model attribute
-                    elif hasattr(self.generator, 'model') and hasattr(self.generator.model, 'load_state_dict'):
-                        logger.info("Loading voice checkpoint into generator.model")
-                        self.generator.model.load_state_dict(state_dict)
+                    # Check if the checkpoint is a tensor (voice embedding) or state dict
+                    if isinstance(checkpoint, torch.Tensor):
+                        logger.info("Loaded voice checkpoint as tensor (voice embedding)")
+                        # Store the voice embedding tensor for future use
+                        self.voice_embedding = checkpoint
                     else:
-                        logger.error("Unable to find appropriate target for loading voice checkpoint")
-                        print("WARNING: Unable to load voice checkpoint into generator. Please check integration.")
+                        # It's a state dict, try different ways to load it
+                        logger.info("Loaded voice checkpoint as state dict")
+                        # First check model._model for CSM generator
+                        if hasattr(self.generator, '_model') and hasattr(self.generator._model, 'load_state_dict'):
+                            logger.info("Loading voice checkpoint into generator._model")
+                            self.generator._model.load_state_dict(checkpoint)
+                        # Next try direct load_state_dict
+                        elif hasattr(self.generator, 'load_state_dict'):
+                            logger.info("Loading voice checkpoint directly into generator")
+                            self.generator.load_state_dict(checkpoint)
+                        # Finally try model attribute
+                        elif hasattr(self.generator, 'model') and hasattr(self.generator.model, 'load_state_dict'):
+                            logger.info("Loading voice checkpoint into generator.model")
+                            self.generator.model.load_state_dict(checkpoint)
+                        else:
+                            logger.error("Unable to find appropriate target for loading voice checkpoint")
+                            print("WARNING: Unable to load voice checkpoint into generator. Please check integration.")
                     
                     print(f"Loaded voice: {self.voice_name} from {self.voice_path}")
                 except Exception as e:
@@ -137,18 +149,65 @@ class TTSManager:
                 raise RuntimeError("Failed to initialize Sesame CSM TTS system")
             sentences = self.split_text_to_sentences(text)
             temp_paths = []
+            
+            # Define a simple local Segment class since import from csm.generator may not be available
+            class Segment:
+                def __init__(self, speaker, text, audio):
+                    self.speaker = speaker
+                    self.text = text
+                    self.audio = audio
+            
+            # If we don't have a voice context set up yet, generate a silent one-time context
+            # This ensures all future sentences use the same voice characteristics
+            voice_context = []
+            if not hasattr(self, 'first_audio') or self.first_audio is None:
+                logger.info("[TTS] Creating initial voice context using a silent generation")
+                try:
+                    # Generate a short, silent segment to create a consistent voice context
+                    silent_text = "."  # Just a period, which will be nearly silent
+                    silent_audio = self.generator.generate(
+                        text=silent_text,
+                        speaker=self.speaker,
+                        context=[],  # Empty for first generation
+                        max_audio_length_ms=1000,  # Very short
+                    )
+                    # Save this for future use
+                    self.first_audio = silent_audio
+                    self.first_text = silent_text
+                    logger.info("[TTS] Created initial voice context")
+                except Exception as e:
+                    logger.error(f"[TTS] Error creating initial voice context: {e}")
+                    # Continue without voice context if it fails
+            
+            # Create context if we have an initial audio sample
+            if hasattr(self, 'first_audio') and self.first_audio is not None:
+                voice_context = [Segment(
+                    speaker=self.speaker,
+                    text=self.first_text,
+                    audio=self.first_audio
+                )]
+                logger.info("[TTS] Using voice context for consistent voice")
+            
             for idx, sentence in enumerate(sentences):
                 if not sentence.strip():
                     continue
                 clean_sentence = self.clean_text_for_tts(sentence.strip())
                 logger.info(f"[TTS] Processing sentence {idx+1}/{len(sentences)}: '{clean_sentence}'")
                 try:
+                    # Always use the same speaker ID and voice context for all sentences
                     audio = self.generator.generate(
                         text=clean_sentence,
-                        speaker=self.speaker,
-                        context=[],
+                        speaker=self.speaker,  # Same speaker ID for all sentences
+                        context=voice_context,  # Important: Use the same voice context for all sentences
                         max_audio_length_ms=10000,
                     )
+                    
+                    # Update the first audio if this is the first sentence and we don't have one yet
+                    if idx == 0 and (not hasattr(self, 'first_audio') or self.first_audio is None):
+                        self.first_audio = audio
+                        self.first_text = clean_sentence
+                        logger.info("[TTS] Stored first sentence audio for future voice consistency")
+                    
                     # Save audio to temp file and queue for playback
                     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
                         temp_path = fp.name
