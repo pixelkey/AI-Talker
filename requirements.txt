@@ -28,3 +28,5 @@ PyAudio==0.2.13
 watchdog
 duckduckgo-search
 beautifulsoup4
+resemblyzer>=0.1.1
+numpy

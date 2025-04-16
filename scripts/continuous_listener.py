@@ -10,6 +10,7 @@ import numpy as np
 import os
 import sounddevice as sd
 import soundfile as sf
+from resemblyzer import VoiceEncoder, preprocess_wav
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -70,6 +71,18 @@ class ContinuousListener:
         
         # Create sound directory if it doesn't exist
         os.makedirs(self.sound_dir, exist_ok=True)
+        
+        self.encoder = VoiceEncoder()  # Speaker embedding model
+        self.activation_voiceprint = None  # Stores user embedding after activation
+        self.activation_audio = None  # Optionally store raw activation audio
+        
+    def audio_data_to_np(self, audio_data, sample_rate=16000):
+        """
+        Convert a speech_recognition.AudioData object to a mono numpy float32 array in range [-1, 1].
+        """
+        raw = audio_data.get_raw_data()
+        audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        return audio_np
         
     def _adjust_for_ambient_noise(self, source):
         """Adjust recognizer sensitivity for ambient noise level."""
@@ -245,6 +258,8 @@ class ContinuousListener:
                             if self.activation_word in text:
                                 logger.info(f"Activation word detected: '{text}'")
                                 self.play_activation_sound()
+                                audio_np = self.audio_data_to_np(audio)
+                                self._handle_activation(audio_np)
                                 self._start_active_listening()
                                 break  # Exit loop once activated
                                 
@@ -311,6 +326,12 @@ class ContinuousListener:
                         # If this looks like the TTS system's own speech, ignore it
                         if self._is_likely_self_speech(text):
                             logger.info(f"Ignoring likely self-speech: '{text}'")
+                            continue
+                            
+                        # Check if the audio matches the activation speaker
+                        audio_np = self.audio_data_to_np(audio)
+                        if not self._should_accept_audio(audio_np):
+                            logger.info("Ignoring audio: Speaker verification failed")
                             continue
                             
                         logger.info(f"Recognized: {text}")
@@ -456,6 +477,55 @@ class ContinuousListener:
         except Exception as e:
             logger.error(f"Error playing self-reflection sound: {e}")
         
+    def _record_activation_sample(self, duration=2):
+        """
+        Record a short audio sample when the activation word is detected.
+        Returns: numpy array of audio samples
+        """
+        import sounddevice as sd
+        fs = 16000
+        logger.info(f"Recording activation voice sample for {duration} seconds...")
+        audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+        sd.wait()
+        audio = np.squeeze(audio)
+        return audio
+
+    def _compute_voiceprint(self, audio):
+        """
+        Compute speaker embedding from audio array
+        """
+        # Resemblyzer expects a mono numpy array at 16kHz
+        return self.encoder.embed_utterance(audio)
+
+    def _voice_match(self, sample_audio):
+        """
+        Compare the incoming audio to the stored activation voiceprint
+        Returns: similarity score (cosine similarity)
+        """
+        if self.activation_voiceprint is None:
+            return 0.0
+        candidate = self._compute_voiceprint(sample_audio)
+        sim = np.dot(candidate, self.activation_voiceprint) / (np.linalg.norm(candidate) * np.linalg.norm(self.activation_voiceprint))
+        return sim
+
+    def _handle_activation(self, audio):
+        """
+        Called when activation word is detected. Records and stores the user's voiceprint.
+        """
+        self.activation_audio = audio
+        self.activation_voiceprint = self._compute_voiceprint(audio)
+        logger.info("Stored activation voiceprint for speaker verification.")
+
+    def _should_accept_audio(self, audio):
+        """
+        Returns True if the audio matches the activation speaker.
+        """
+        if self.activation_voiceprint is None:
+            return False
+        sim = self._voice_match(audio)
+        logger.info(f"Speaker verification similarity: {sim:.3f}")
+        return sim > 0.75  # Threshold for same speaker
+
     def start(self):
         """Start the continuous listener thread."""
         self._start_listen_for_activation_thread()
