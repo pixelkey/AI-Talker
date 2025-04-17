@@ -497,16 +497,29 @@ class TTSManager:
     def notify_continuous_listener_start(self, text):
         """Notify that continuous listener should be stopped."""
         # This is a hook for the UI to stop the continuous listener
-        if hasattr(self.context, 'continuous_listener_running') and self.context.get('continuous_listener_running', False):
-            print("Stopping continuous listener for TTS playback")
+        if 'continuous_listener' in self.context:
+            print("Setting continuous listener playback flag to active")
             try:
-                self.context['stop_continuous_listener']()
+                # Store the TTS text for later self-speech detection
+                if hasattr(self.context['continuous_listener'], 'add_tts_phrase'):
+                    self.context['continuous_listener'].add_tts_phrase(text)
+                
+                # Set the TTS playback active flag to pause listening
+                self.context['continuous_listener'].set_tts_playback_active(True)
             except Exception as e:
-                print(f"Error stopping continuous listener: {e}")
+                print(f"Error setting continuous listener playback flag: {e}")
 
     def notify_continuous_listener_end(self):
         """Notify that continuous listener can be restarted."""
-        pass
+        if 'continuous_listener' in self.context:
+            print("Setting continuous listener playback flag to inactive")
+            try:
+                # Clear the TTS playback active flag to resume listening
+                # but only after a more substantial delay to ensure any audio has dissipated
+                time.sleep(0.8)  # Increased from 0.3s to 0.8s
+                self.context['continuous_listener'].set_tts_playback_active(False)
+            except Exception as e:
+                print(f"Error clearing continuous listener playback flag: {e}")
 
     def _find_voice_checkpoint(self, voice_name):
         """Find the voice checkpoint file."""

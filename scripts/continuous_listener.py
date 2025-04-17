@@ -90,6 +90,10 @@ class ContinuousListener:
         self.activation_audio = None  # Optionally store raw activation audio
         self._load_or_enroll_voiceprint()
         
+        self.tts_playback_active = False  # Flag to indicate TTS playback is active
+        self.recent_tts_phrases = []      # Store recent TTS phrases to detect self-speech
+        self.max_recent_phrases = 5       # Maximum number of recent phrases to store
+        
     def audio_data_to_np(self, audio_data, sample_rate=16000):
         """
         Convert a speech_recognition.AudioData object to a mono numpy float32 array in range [-1, 1].
@@ -164,6 +168,11 @@ class ContinuousListener:
         except Exception as e:
             logger.error(f"Error in set_tts_playing: {e}")
             
+    def set_tts_playback_active(self, active: bool):
+        """Set TTS playback active flag for synchronization."""
+        self.tts_playback_active = active
+        logger.info(f"TTS playback active set to {active}")
+            
     def signal_response_complete(self):
         """
         Signal that a response has been completed.
@@ -177,53 +186,77 @@ class ContinuousListener:
         # Reset last TTS end time to avoid unnecessary cooldown
         self.last_tts_end_time = time.time()
             
-    def should_ignore_audio(self):
+    def should_ignore_audio(self, audio_np, recognized_text):
         """
-        Determine if audio should be ignored (during TTS playback or cooldown period).
+        Check if audio should be ignored based on various criteria.
         
         Returns:
             bool: True if audio should be ignored, False otherwise
         """
         try:
-            # If TTS is currently playing, ignore audio
-            if self.is_tts_playing:
-                logger.debug("Ignoring audio: TTS is currently playing")
+            # First check: speaker verification
+            if not self._should_accept_audio(audio_np):
+                logger.info("Ignoring audio: Speaker verification failed")
                 return True
                 
-            # If we're still in the cooldown period after TTS, ignore audio
-            time_since_tts = time.time() - self.last_tts_end_time
-            if time_since_tts < self.tts_cooldown_period:
-                logger.debug(f"Ignoring audio: Within TTS cooldown period ({time_since_tts:.2f}/{self.tts_cooldown_period:.2f}s)")
+            # Second check: text is too short
+            if len(recognized_text.strip()) < 2:
+                logger.info(f"Ignoring audio: Text too short: '{recognized_text}'")
                 return True
                 
-            # No reason to ignore, process audio normally
+            # Third check: self-speech detection (check if this matches our own TTS output)
+            if self._is_likely_self_speech(recognized_text):
+                logger.info(f"Ignoring audio: Likely self-speech detected: '{recognized_text}'")
+                return True
+                
             return False
-            
         except Exception as e:
             logger.error(f"Error in should_ignore_audio: {e}")
             # Default to not ignoring audio on error
             return False
             
-    def _is_likely_self_speech(self, recognized_text, min_ngram=4):
+    def _is_likely_self_speech(self, recognized_text, min_ngram=3):
         """
         Returns True if the recognized_text is likely to be self-speech (echoed bot TTS), using substring and n-gram checks.
         """
+        if not recognized_text or not hasattr(self, 'recent_tts_phrases') or not self.recent_tts_phrases:
+            return False
+            
         import string
         normalized_text = recognized_text.lower().translate(str.maketrans('', '', string.punctuation))
         text_words = normalized_text.split()
+        
         for phrase in self.recent_tts_phrases:
+            if not phrase:
+                continue
+                
             norm_phrase = phrase.lower().translate(str.maketrans('', '', string.punctuation))
-            # Direct substring check
-            if norm_phrase in normalized_text or normalized_text in norm_phrase:
-                return True
-            # Sliding window n-gram substring match
             phrase_words = norm_phrase.split()
-            for n in range(min_ngram, min(len(text_words), len(phrase_words)) + 1):
-                for i in range(len(text_words) - n + 1):
-                    ngram = ' '.join(text_words[i:i+n])
-                    if ngram and ngram in norm_phrase:
-                        logger.info(f"Self-speech detected by n-gram match: '{ngram}' in TTS phrase.")
+            
+            # Quick check: If recognized text is a substring of TTS phrase
+            if normalized_text in norm_phrase:
+                logger.info(f"Self-speech detected: '{normalized_text}' is in recent TTS phrase")
+                return True
+                
+            # Check for shared n-grams (phrases of n consecutive words)
+            if len(text_words) >= min_ngram:
+                # Create n-grams from the recognized text
+                for i in range(len(text_words) - min_ngram + 1):
+                    ngram = ' '.join(text_words[i:i+min_ngram])
+                    if ngram in norm_phrase:
+                        logger.info(f"Self-speech detected by n-gram match: '{ngram}' appears in TTS phrase")
                         return True
+                        
+            # Check for high word overlap
+            text_set = set(text_words)
+            phrase_set = set(phrase_words)
+            if len(text_set) >= 4 and len(phrase_set) >= 4:  # Only check substantial phrases
+                overlap = text_set.intersection(phrase_set)
+                overlap_ratio = len(overlap) / len(text_set)
+                if overlap_ratio > 0.7:  # 70% of words match
+                    logger.info(f"Self-speech detected by word overlap: {overlap_ratio:.2f} ratio")
+                    return True
+                    
         return False
         
     def listen_for_activation(self):
@@ -524,7 +557,7 @@ class ContinuousListener:
             embedding = self.encoder.embed_utterance(audio_np)
             sim = np.dot(self.activation_voiceprint, embedding) / (np.linalg.norm(self.activation_voiceprint) * np.linalg.norm(embedding))
             logger.info(f"Speaker verification similarity: {sim:.3f}")
-            if sim > 0.85:  # Threshold for same speaker (updated)
+            if sim > 0.75:  # Threshold for same speaker (updated)
                 return True
             else:
                 logger.warning(f"Speaker verification failed: similarity {sim:.3f} below threshold 0.85.")
@@ -591,26 +624,28 @@ class ContinuousListener:
         
     def start(self):
         """Start the continuous listener thread."""
+        if hasattr(self, 'thread') and self.thread and self.thread.is_alive():
+            logger.warning("ContinuousListener thread already running.")
+            return
         self._start_listen_for_activation_thread()
-        
+
     def stop(self):
         """Stop the continuous listener."""
         logger.info("Stopping continuous listener...")
         self.stop_requested = True
-        
         # Wait for any active threads to finish
-        if self.active_thread and self.active_thread.is_alive():
+        if hasattr(self, 'active_thread') and self.active_thread and self.active_thread.is_alive():
             try:
                 self.active_thread.join(timeout=2)
             except Exception as e:
                 logger.error(f"Error joining active thread: {e}")
-                
-        if self.thread and self.thread.is_alive():
+            self.active_thread = None
+        if hasattr(self, 'thread') and self.thread and self.thread.is_alive():
             try:
                 self.thread.join(timeout=2)
             except Exception as e:
                 logger.error(f"Error joining listener thread: {e}")
-                
+            self.thread = None
         self.is_active = False
         self.is_listening = False
 
@@ -634,6 +669,10 @@ class ContinuousListener:
 
     def _should_pause_for_audio(self):
         """Return True if listening should pause due to audio playback (system or internal)."""
+        # Pause if TTS playback is active
+        if getattr(self, 'tts_playback_active', False):
+            logger.info("Pausing listening due to TTS playback flag.")
+            return True
         # Prioritize system-level check if available
         if HAS_PULSECTL:
             result = self._is_audio_playing()
@@ -643,3 +682,12 @@ class ContinuousListener:
         result = getattr(self, 'is_playing_audio', False)
         logger.debug(f"_should_pause_for_audio: HAS_PULSECTL=False, is_playing_audio={result}")
         return result
+
+    def add_tts_phrase(self, text):
+        """Add a TTS phrase to recent phrases list for self-speech detection."""
+        if text:
+            logger.info(f"Adding TTS phrase for self-speech detection: '{text[:50]}...' if longer")
+            self.recent_tts_phrases.append(text)
+            # Keep only the most recent phrases
+            if len(self.recent_tts_phrases) > self.max_recent_phrases:
+                self.recent_tts_phrases.pop(0)
