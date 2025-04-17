@@ -87,11 +87,11 @@ class VoiceChatbot:
             # Debug logs for better tracking
             logger.info(f"DEBUG - Original response: {response[:100]}...")
             
-            # Add emotion to the text if detected
-            tts_text = response
-            if 'emotion' in self.context:
-                tts_text = f"[{self.context['emotion']}] {response}"
-                logger.info(f"DEBUG - TTS text with emotion: {tts_text[:100]}...")
+            # # Add emotion to the text if detected
+            # tts_text = response
+            # if 'emotion' in self.context:
+            #     tts_text = f"[{self.context['emotion']}] {response}"
+            #     logger.info(f"DEBUG - TTS text with emotion: {tts_text[:100]}...")
             
             # Generate TTS
             self.tts_manager.text_to_speech(tts_text)

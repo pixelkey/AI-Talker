@@ -116,22 +116,7 @@ def chatbot_response(input_text, context_documents, context, history):
     if response_text is None:
         return history, "Error generating response.", final_references_str, ""
 
-    # Analyze emotional content and get TTS cue
-    logger.info("\n=== Emotion Analysis for Response ===")
-    logger.info(f"User input: {input_text}")
-    logger.info(f"Generated response: {response_text}")
-    
-    emotion_cue = analyze_emotion_and_tone(response_text, context)
-    logger.info(f"Selected emotion cue: {emotion_cue}")
-    
-    # Prepend emotion cue to response for TTS
-    tts_response = f"{emotion_cue} {response_text}"
-    logger.info(f"Final TTS response (first 100 chars): {tts_response[:100]}...")
-    
-    # Store the TTS-formatted response in context for use by interface.py
-    context['tts_response'] = tts_response
-    
-    # Return the history unchanged, the original response (without emotion cue), references, and a cleared input field
+    # Return the history unchanged, the original response, references, and a cleared input field
     return history, response_text, final_references_str, ""
 
 def retrieve_relevant_documents(normalized_input, context):
@@ -367,14 +352,14 @@ FILTERED_REFERENCES: [If keeping references, include only the relevant ones here
     if config.MODEL_SOURCE == "openai":
         response = context["client"].chat.completions.create(
             model=context["LLM_MODEL"],
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt.format(references=references, query=query)}],
             max_tokens=300,
         )
         eval_text = response.choices[0].message.content.strip()
     else:
         response = context["client"].chat(
             model=context["LLM_MODEL"],
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt.format(references=references, query=query)}]
         )
         eval_text = response['message']['content'].strip()
     
@@ -500,72 +485,3 @@ def extract_message_content(msg: str) -> str:
     except Exception as e:
         logging.error(f"Error extracting message content: {str(e)}")
         return msg
-
-def analyze_emotion_and_tone(text: str, context: Dict[str, Any]) -> str:
-    """
-    Analyze the emotional content and appropriate tone for a response.
-    Returns an emotional cue string suitable for Tortoise TTS.
-    """
-    logger = logging.getLogger(__name__)
-    logger.info("\n=== Starting Emotion Analysis ===")
-    logger.info(f"Analyzing text (first 100 chars): {text[:100]}...")
-    
-    try:
-        prompt = """Analyze this text and determine the most appropriate emotional tone for text-to-speech synthesis.
-Consider:
-1. Emotional content (happy, sad, concerned, excited, etc.)
-2. Speaking style (formal, casual, gentle, firm)
-3. Pacing (slow, moderate, energetic)
-
-Return ONLY the emotional cue in brackets, like: [happy and energetic] or [concerned and gentle]
-Keep it simple - use 2-3 descriptive words maximum.
-Do not include any explanations or notes.
-
-Text to analyze:
-{text}
-
-Emotional Cue:"""
-
-        logger.info("Sending prompt to LLM for emotion analysis")
-        if context["MODEL_SOURCE"] == "openai":
-            response = context["client"].chat.completions.create(
-                model=context["LLM_MODEL"],
-                messages=[{"role": "user", "content": prompt.format(text=text)}],
-                max_tokens=20,
-                temperature=0.7
-            )
-            emotion_cue = response.choices[0].message.content.strip()
-            logger.info(f"OpenAI emotion analysis response: {emotion_cue}")
-        else:
-            response = context["client"].chat(
-                model=context["LLM_MODEL"],
-                messages=[{"role": "user", "content": prompt.format(text=text)}]
-            )
-            emotion_cue = response['message']['content'].strip()
-            logger.info(f"Local LLM emotion analysis response: {emotion_cue}")
-            
-        # Clean up the response
-        # Remove any explanatory text after the emotion cue
-        if '\n' in emotion_cue:
-            emotion_cue = emotion_cue.split('\n')[0].strip()
-            
-        # Remove any parenthetical notes
-        if '(' in emotion_cue:
-            emotion_cue = emotion_cue.split('(')[0].strip()
-            
-        # Extract just the emotion words if already in brackets
-        if emotion_cue.startswith('[') and ']' in emotion_cue:
-            emotion_cue = emotion_cue[1:emotion_cue.index(']')].strip()
-            
-        # Clean up any remaining brackets and ensure proper format
-        emotion_cue = emotion_cue.replace('[', '').replace(']', '').strip()
-        emotion_cue = f"[{emotion_cue}]"
-            
-        logger.info(f"Final emotion cue: {emotion_cue}")
-        return emotion_cue
-        
-    except Exception as e:
-        logger.error(f"Error in emotion analysis: {str(e)}", exc_info=True)
-        fallback_cue = "[neutral and clear]"
-        logger.info(f"Using fallback emotion cue: {fallback_cue}")
-        return fallback_cue
