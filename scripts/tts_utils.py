@@ -64,7 +64,8 @@ class TTSManager:
         
         self.voice_path = self._find_voice_checkpoint(self.voice_name)
         self.voice_context = []  # Store voice context for consistency
-        self.initialize_tts()
+        # Preload TTS model/context at startup
+        self.preload_tts_async()
 
     def get_device(self):
         if torch.backends.mps.is_available():
@@ -118,6 +119,25 @@ class TTSManager:
             import traceback
             traceback.print_exc()
     
+    def preload_tts_async(self):
+        """
+        Preload TTS model and context in the background to minimize latency for next batch.
+        """
+        import threading
+        def preload():
+            if self.generator is None:
+                self.initialize_tts()
+            # Optionally run a dummy inference to keep CUDA hot
+            try:
+                dummy_text = "Warm up."
+                # Use self.voice_context if available, else minimal context
+                context = self.voice_context if self.voice_context else []
+                _ = self.generator.generate(dummy_text, speaker=self.speaker, context=context)
+            except Exception as e:
+                print(f"[TTSManager] Dummy warm-up failed: {e}")
+        t = threading.Thread(target=preload, daemon=True)
+        t.start()
+
     def _load_voice_embedding(self):
         """Load the voice embedding from the voice file."""
         if not self.voice_path:
@@ -423,6 +443,8 @@ class TTSManager:
                     traceback.print_exc()
             
             print(f"Finished processing all sentences. {len(temp_paths)} audio files created.")
+            # After all segments processed, preload for next batch
+            self.preload_tts_async()
             return temp_paths
         except Exception as e:
             logger.error(f"Error in text-to-speech: {e}")

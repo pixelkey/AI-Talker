@@ -232,7 +232,7 @@ class ContinuousListener:
             common_words = text_words.intersection(phrase_words)
             
             # If more than 75% of words match, likely self-speech
-            if len(common_words) >= len(text_words) * 0.75:
+            if len(common_words) >= len(text_words) * 0.85:
                 return True
                 
         return False
@@ -340,6 +340,7 @@ class ContinuousListener:
                         audio_np = self.audio_data_to_np(audio)
                         if not self._should_accept_audio(audio_np):
                             logger.info("Ignoring audio: Speaker verification failed")
+                            logger.warning(f"Speaker verification failed. Recognized text: '{text}'")
                             continue
                             
                         logger.info(f"Recognized: {text}")
@@ -524,15 +525,26 @@ class ContinuousListener:
         self.activation_voiceprint = self._compute_voiceprint(audio)
         logger.info("Stored activation voiceprint for speaker verification.")
 
-    def _should_accept_audio(self, audio):
+    def _should_accept_audio(self, audio_np):
         """
-        Returns True if the audio matches the activation speaker.
+        Compare the speaker embedding of the input audio to the enrolled user's embedding.
+        Returns True if similarity is above threshold, otherwise False.
         """
         if self.activation_voiceprint is None:
+            logger.warning("No enrolled user voiceprint found for speaker verification.")
             return False
-        sim = self._voice_match(audio)
-        logger.info(f"Speaker verification similarity: {sim:.3f}")
-        return sim > 0.75  # Threshold for same speaker
+        try:
+            embedding = self.encoder.embed_utterance(audio_np)
+            sim = np.dot(self.activation_voiceprint, embedding) / (np.linalg.norm(self.activation_voiceprint) * np.linalg.norm(embedding))
+            logger.info(f"Speaker verification similarity: {sim:.3f}")
+            if sim > 0.85:  # Threshold for same speaker (updated)
+                return True
+            else:
+                logger.warning(f"Speaker verification failed: similarity {sim:.3f} below threshold 0.85.")
+                return False
+        except Exception as e:
+            logger.error(f"Speaker verification error: {e}")
+            return False
 
     def _load_or_enroll_voiceprint(self):
         os.makedirs(ASSETS_VOICEPRINT_DIR, exist_ok=True)
