@@ -15,6 +15,13 @@ from resemblyzer import VoiceEncoder, preprocess_wav
 # Configure logging
 logger = logging.getLogger(__name__)
 
+ASSETS_VOICEPRINT_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "voiceprints")
+USER_VOICEPRINT_PATH = os.path.join(ASSETS_VOICEPRINT_DIR, "user_voiceprint.npy")
+ENROLLMENT_SCRIPT = (
+    "Please read the following sentence clearly and naturally: "
+    "'The quick brown fox jumps over the lazy dog. I am ready.'"
+)
+
 class ContinuousListener:
     """A class to continuously listen for speech input with activation word detection."""
     
@@ -75,6 +82,7 @@ class ContinuousListener:
         self.encoder = VoiceEncoder()  # Speaker embedding model
         self.activation_voiceprint = None  # Stores user embedding after activation
         self.activation_audio = None  # Optionally store raw activation audio
+        self._load_or_enroll_voiceprint()
         
     def audio_data_to_np(self, audio_data, sample_rate=16000):
         """
@@ -526,6 +534,62 @@ class ContinuousListener:
         logger.info(f"Speaker verification similarity: {sim:.3f}")
         return sim > 0.75  # Threshold for same speaker
 
+    def _load_or_enroll_voiceprint(self):
+        os.makedirs(ASSETS_VOICEPRINT_DIR, exist_ok=True)
+        if os.path.exists(USER_VOICEPRINT_PATH):
+            self.activation_voiceprint = np.load(USER_VOICEPRINT_PATH)
+            logger.info(f"Loaded user voiceprint from {USER_VOICEPRINT_PATH}")
+        else:
+            logger.info("No user voiceprint found. Starting enrollment.")
+            self._enroll_user_voiceprint()
+
+    def _enroll_user_voiceprint(self):
+        import sounddevice as sd
+        import soundfile as sf
+        import speech_recognition as sr
+        import string
+        fs = 16000
+        duration = 8  # seconds
+        recognizer = sr.Recognizer()
+        while True:
+            print("\n=== AI-Talker Voice Enrollment ===")
+            print(ENROLLMENT_SCRIPT)
+            input("Press ENTER when ready to record...")
+            print(f"Recording for {duration} seconds. Please start speaking now...")
+            audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+            sd.wait()
+            audio = np.squeeze(audio)
+            # Save temp wav for recognition
+            temp_wav = "temp_enroll.wav"
+            sf.write(temp_wav, audio, fs)
+            # Recognize speech
+            with sr.AudioFile(temp_wav) as source:
+                audio_data = recognizer.record(source)
+                try:
+                    recognized = recognizer.recognize_google(audio_data)
+                    print(f"Recognized: {recognized}")
+                except Exception as e:
+                    print(f"Could not recognize speech: {e}")
+                    recognized = ""
+            os.remove(temp_wav)
+            # Normalize and compare
+            def normalize(text):
+                return set(word.strip(string.punctuation).lower() for word in text.split())
+            script_words = normalize(ENROLLMENT_SCRIPT.split(":", 1)[-1])
+            recognized_words = normalize(recognized)
+            if script_words <= recognized_words:
+                print("Enrollment successful!")
+                embedding = self.encoder.embed_utterance(audio)
+                os.makedirs(ASSETS_VOICEPRINT_DIR, exist_ok=True)
+                np.save(USER_VOICEPRINT_PATH, embedding)
+                self.activation_voiceprint = embedding
+                print(f"Voiceprint enrollment complete and saved to {USER_VOICEPRINT_PATH}\n")
+                logger.info(f"User voiceprint enrolled and saved to {USER_VOICEPRINT_PATH}")
+                break
+            else:
+                logger.warning(f"Enrollment failed: recognized='{recognized}', expected='{ENROLLMENT_SCRIPT.split(':', 1)[-1].strip()}'")
+                print("\nEnrollment failed: Please read the script exactly as shown. Let's try again.\n")
+        
     def start(self):
         """Start the continuous listener thread."""
         self._start_listen_for_activation_thread()
