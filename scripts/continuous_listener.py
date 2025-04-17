@@ -12,6 +12,12 @@ import sounddevice as sd
 import soundfile as sf
 from resemblyzer import VoiceEncoder, preprocess_wav
 
+try:
+    import pulsectl
+    HAS_PULSECTL = True
+except ImportError:
+    HAS_PULSECTL = False
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -198,43 +204,26 @@ class ContinuousListener:
             # Default to not ignoring audio on error
             return False
             
-    def _is_likely_self_speech(self, text):
+    def _is_likely_self_speech(self, recognized_text, min_ngram=4):
         """
-        Check if the recognized text is likely the system's own speech being picked up.
-        
-        Args:
-            text: The recognized text to check
-            
-        Returns:
-            bool: True if the text is likely from TTS output, False otherwise
+        Returns True if the recognized_text is likely to be self-speech (echoed bot TTS), using substring and n-gram checks.
         """
-        # If we have no recent TTS phrases, it can't be self-speech
-        if not self.recent_tts_phrases:
-            return False
-            
-        # Normalize text for comparison (lowercase, strip punctuation)
         import string
-        normalized_text = text.lower().translate(str.maketrans('', '', string.punctuation))
-        
-        # Check if the recognized text is a substring of any recent TTS output
-        # or if any recent TTS output is a substring of the recognized text
+        normalized_text = recognized_text.lower().translate(str.maketrans('', '', string.punctuation))
+        text_words = normalized_text.split()
         for phrase in self.recent_tts_phrases:
             norm_phrase = phrase.lower().translate(str.maketrans('', '', string.punctuation))
-            
-            # Check for significant overlap between the texts
-            # Either one contains the other, or they share many words
+            # Direct substring check
             if norm_phrase in normalized_text or normalized_text in norm_phrase:
                 return True
-                
-            # Check for word overlap
-            text_words = set(normalized_text.split())
-            phrase_words = set(norm_phrase.split())
-            common_words = text_words.intersection(phrase_words)
-            
-            # If more than 75% of words match, likely self-speech
-            if len(common_words) >= len(text_words) * 0.85:
-                return True
-                
+            # Sliding window n-gram substring match
+            phrase_words = norm_phrase.split()
+            for n in range(min_ngram, min(len(text_words), len(phrase_words)) + 1):
+                for i in range(len(text_words) - n + 1):
+                    ngram = ' '.join(text_words[i:i+n])
+                    if ngram and ngram in norm_phrase:
+                        logger.info(f"Self-speech detected by n-gram match: '{ngram}' in TTS phrase.")
+                        return True
         return False
         
     def listen_for_activation(self):
@@ -301,26 +290,24 @@ class ContinuousListener:
             while self.is_active and not self.stop_requested:
                 try:
                     # Check if we should be ignoring audio input right now
-                    if self.should_ignore_audio():
-                        # Short sleep to avoid busy waiting, then check again
-                        time.sleep(0.1)
+                    if self._should_pause_for_audio():
+                        logger.info("Pausing listening due to audio playback detected.")
+                        time.sleep(0.2)
                         continue
-                        
-                    logger.info("Listening for speech...")
+                    else:
+                        logger.info("No audio playback detected; listening for user input.")
+                    # Listen with timeout to avoid blocking indefinitely
                     try:
-                        # Listen with timeout to avoid blocking indefinitely
-                        audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=30)
+                        audio = self.recognizer.listen(source, timeout=3, phrase_time_limit=10)
                     except sr.WaitTimeoutError:
                         logger.debug("No speech detected, continuing")
                         continue
-                    
+                    # Immediately after listening, check again for playback
+                    if self._should_pause_for_audio():
+                        logger.info("Audio playback detected after listen; discarding captured audio.")
+                        continue
                     # Wait before processing to ensure self-speech detection is accurate
                     time.sleep(0.1)
-                    
-                    # Check again if we should ignore audio (TTS might have started during listen)
-                    if self.should_ignore_audio():
-                        logger.debug("TTS started during listen, discarding audio")
-                        continue
                     
                     try:
                         # Process the audio
@@ -626,3 +613,33 @@ class ContinuousListener:
                 
         self.is_active = False
         self.is_listening = False
+
+    def _is_audio_playing(self):
+        """Check if any system audio is currently playing (PulseAudio, Linux only)."""
+        if not HAS_PULSECTL:
+            logger.debug("PulseCtl not available; cannot check system audio playback.")
+            return False
+        try:
+            with pulsectl.Pulse('audio-check') as pulse:
+                for sink_input in pulse.sink_input_list():
+                    # If any sink input is not corked (paused), audio is playing
+                    if sink_input.corked == 0 and sink_input.volume.value_flat > 0.01:
+                        logger.info(f"System audio detected as playing: sink_input={sink_input.proplist.get('application.name', 'unknown')}, volume={sink_input.volume.value_flat}")
+                        return True
+            logger.info("No system audio detected as playing.")
+            return False
+        except Exception as e:
+            logger.error(f"Error checking system audio playback: {e}")
+            return False
+
+    def _should_pause_for_audio(self):
+        """Return True if listening should pause due to audio playback (system or internal)."""
+        # Prioritize system-level check if available
+        if HAS_PULSECTL:
+            result = self._is_audio_playing()
+            logger.debug(f"_should_pause_for_audio: HAS_PULSECTL=True, result={result}")
+            return result
+        # Fallback to internal flag if system check is not available
+        result = getattr(self, 'is_playing_audio', False)
+        logger.debug(f"_should_pause_for_audio: HAS_PULSECTL=False, is_playing_audio={result}")
+        return result
